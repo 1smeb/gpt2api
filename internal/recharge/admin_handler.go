@@ -138,7 +138,7 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 
 // GET /api/admin/payment/epay
 func (h *AdminHandler) GetPaymentConfig(c *gin.Context) {
-	resp.OK(c, h.svc.AdminPaymentConfigForBase(requestBaseURL(c.Request)))
+	resp.OK(c, h.svc.AdminPaymentConfig())
 }
 
 type paymentConfigReq struct {
@@ -175,7 +175,7 @@ func (h *AdminHandler) UpdatePaymentConfig(c *gin.Context) {
 		resp.BadRequest(c, err.Error())
 		return
 	}
-	resp.OK(c, h.svc.AdminPaymentConfigForBase(requestBaseURL(c.Request)))
+	resp.OK(c, h.svc.AdminPaymentConfig())
 }
 
 // POST /api/admin/recharge/orders/:id/force-paid

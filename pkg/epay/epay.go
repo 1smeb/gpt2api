@@ -13,7 +13,6 @@
 package epay
 
 import (
-	"crypto/hmac"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
@@ -72,7 +71,7 @@ func (s *Signer) Verify(params map[string]string, got string) bool {
 		return false
 	}
 	want := s.Sign(params)
-	return hmac.Equal([]byte(want), []byte(strings.ToLower(got)))
+	return strings.EqualFold(want, got)
 }
 
 // BuildPayURL 构造跳转给用户浏览器的完整 URL。
