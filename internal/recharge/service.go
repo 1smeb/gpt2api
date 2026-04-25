@@ -65,12 +65,22 @@ func NewService(dao *DAO, bill *billing.Engine, users *user.DAO,
 
 // Enabled 表示 epay 通道是否已配置完整(运维侧)。
 func (s *Service) Enabled() bool {
+	return s.EnabledForBase("")
+}
+
+func (s *Service) EnabledForBase(requestBaseURL string) bool {
 	cfg := s.epayConfig()
+	notifyURL := s.resolveCallbackURL(cfg.NotifyURL, "", requestBaseURL, "/api/public/epay/notify")
+	returnURL := s.resolveCallbackURL(cfg.ReturnURL, "", requestBaseURL, "/api/public/epay/return")
+	return s.channelReady(cfg, notifyURL, returnURL)
+}
+
+func (s *Service) channelReady(cfg config.EPayConfig, notifyURL, returnURL string) bool {
 	return strings.TrimSpace(cfg.GatewayURL) != "" &&
 		strings.TrimSpace(cfg.PID) != "" &&
 		strings.TrimSpace(cfg.Key) != "" &&
-		s.notifyURL() != "" &&
-		s.returnURL() != ""
+		strings.TrimSpace(notifyURL) != "" &&
+		strings.TrimSpace(returnURL) != ""
 }
 
 // AdminEnabled 表示"管理员是否允许充值入口"(业务侧开关)。未注入 settings 视为允许。
@@ -120,13 +130,19 @@ type CreateInput struct {
 	PackageID uint64
 	// PayType 可选,决定 epay 网关跳出来默认哪种二维码。
 	// "" 让收银台自选;常见值 "alipay" / "wxpay"。
-	PayType  string
-	ClientIP string
+	PayType        string
+	ClientIP       string
+	RequestBaseURL string
+	NotifyURL      string
+	ReturnURL      string
 }
 
 // Create 创建订单并生成跳转 URL。
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Order, error) {
-	if !s.Enabled() {
+	cfg := s.epayConfig()
+	notifyURL := s.resolveCallbackURL(cfg.NotifyURL, in.NotifyURL, in.RequestBaseURL, "/api/public/epay/notify")
+	returnURL := s.resolveCallbackURL(cfg.ReturnURL, in.ReturnURL, in.RequestBaseURL, "/api/public/epay/return")
+	if !s.channelReady(cfg, notifyURL, returnURL) {
 		return nil, ErrChannelDisabled
 	}
 	// 充值总开关(settings 未注入时视为允许,兼容旧行为)
@@ -166,12 +182,6 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Order, error) {
 	if in.PayType != "" {
 		extra["type"] = in.PayType
 	}
-	notifyURL := s.notifyURL()
-	returnURL := s.returnURL()
-	if notifyURL == "" || returnURL == "" {
-		return nil, ErrChannelDisabled
-	}
-	cfg := s.epayConfig()
 	payURL, err := s.signer().BuildPayURL(
 		cfg.GatewayURL, outTradeNo, pkg.Name,
 		pkg.PriceCNY, notifyURL, returnURL, extra,
@@ -414,7 +424,13 @@ type PaymentConfigUpdate struct {
 }
 
 func (s *Service) AdminPaymentConfig() PaymentConfig {
+	return s.AdminPaymentConfigForBase("")
+}
+
+func (s *Service) AdminPaymentConfigForBase(requestBaseURL string) PaymentConfig {
 	cfg := s.epayConfig()
+	notifyURL := s.resolveCallbackURL(cfg.NotifyURL, "", requestBaseURL, "/api/public/epay/notify")
+	returnURL := s.resolveCallbackURL(cfg.ReturnURL, "", requestBaseURL, "/api/public/epay/return")
 	return PaymentConfig{
 		GatewayURL:         cfg.GatewayURL,
 		PID:                cfg.PID,
@@ -423,9 +439,9 @@ func (s *Service) AdminPaymentConfig() PaymentConfig {
 		SignType:           cfg.SignType,
 		KeySet:             strings.TrimSpace(cfg.Key) != "",
 		KeyMask:            maskSecret(cfg.Key),
-		EffectiveNotifyURL: s.notifyURL(),
-		EffectiveReturnURL: s.returnURL(),
-		ChannelReady:       s.Enabled(),
+		EffectiveNotifyURL: notifyURL,
+		EffectiveReturnURL: returnURL,
+		ChannelReady:       s.channelReady(cfg, notifyURL, returnURL),
 		RechargeEnabled:    s.AdminEnabled(),
 	}
 }
@@ -560,18 +576,28 @@ func (s *Service) epayConfig() config.EPayConfig {
 }
 
 func (s *Service) notifyURL() string {
-	return s.callbackURL(s.epayConfig().NotifyURL, "/api/public/epay/notify")
+	return s.resolveCallbackURL(s.epayConfig().NotifyURL, "", "", "/api/public/epay/notify")
 }
 
 func (s *Service) returnURL() string {
-	return s.callbackURL(s.epayConfig().ReturnURL, "/api/public/epay/return")
+	return s.resolveCallbackURL(s.epayConfig().ReturnURL, "", "", "/api/public/epay/return")
 }
 
-func (s *Service) callbackURL(configured, p string) string {
+func (s *Service) resolveCallbackURL(configured, requested, requestBase, p string) string {
+	if v := strings.TrimSpace(requested); v != "" {
+		return v
+	}
 	if v := strings.TrimSpace(configured); v != "" {
 		return v
 	}
-	base := strings.TrimSpace(s.baseURL)
+	if v := callbackURLFromBase(requestBase, p); v != "" {
+		return v
+	}
+	return callbackURLFromBase(s.baseURL, p)
+}
+
+func callbackURLFromBase(base, p string) string {
+	base = strings.TrimSpace(base)
 	if base == "" {
 		return ""
 	}
