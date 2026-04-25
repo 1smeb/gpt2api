@@ -147,22 +147,6 @@ func (h *Handler) EPayReturn(c *gin.Context) {
 }
 
 func renderReturnPage(ret ReturnResult) string {
-	trusted := "未通过签名校验"
-	if ret.Trusted {
-		trusted = "已通过签名校验"
-	}
-	outTradeNo := html.EscapeString(ret.OutTradeNo)
-	if outTradeNo == "" {
-		outTradeNo = "-"
-	}
-	tradeStatus := html.EscapeString(ret.TradeStatus)
-	if tradeStatus == "" {
-		tradeStatus = "-"
-	}
-	localStatus := html.EscapeString(ret.LocalStatus)
-	if localStatus == "" {
-		localStatus = "-"
-	}
 	return `<!doctype html>
 <html lang="zh-CN">
 <head>
