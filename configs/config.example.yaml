@@ -58,9 +58,7 @@ epay:
   gateway_url: ""
   pid: ""
   key: ""
-  # 为空时优先使用当前请求域名,再回退到 app.base_url + /api/public/epay/notify
   notify_url: ""
-  # 为空时优先使用当前请求域名,再回退到 app.base_url + /api/public/epay/return
   return_url: ""
   sign_type: "MD5"
   expires_min: 30

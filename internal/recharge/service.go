@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
 
 	"go.uber.org/zap"
 
@@ -27,7 +26,6 @@ var (
 	ErrRechargeDisabled    = errors.New("recharge: recharge is disabled by admin")
 	ErrAmountOutOfRange    = errors.New("recharge: amount out of allowed range")
 	ErrDailyLimitExceeded  = errors.New("recharge: daily limit exceeded")
-	ErrSettingsUnavailable = errors.New("recharge: settings unavailable")
 )
 
 // Service 协调下单、回调入账、查询。
@@ -35,6 +33,7 @@ type Service struct {
 	dao     *DAO
 	billing *billing.Engine
 	users   *user.DAO
+	signer  *epay.Signer
 	cfg     config.EPayConfig
 	mail    *mailer.Mailer
 	baseURL string // app.base_url 用于邮件里的链接
@@ -56,6 +55,7 @@ func NewService(dao *DAO, bill *billing.Engine, users *user.DAO,
 		dao:     dao,
 		billing: bill,
 		users:   users,
+		signer:  epay.NewSigner(ePayCfg.PID, ePayCfg.Key, ePayCfg.SignType),
 		cfg:     ePayCfg,
 		mail:    mail,
 		baseURL: baseURL,
@@ -65,22 +65,7 @@ func NewService(dao *DAO, bill *billing.Engine, users *user.DAO,
 
 // Enabled 表示 epay 通道是否已配置完整(运维侧)。
 func (s *Service) Enabled() bool {
-	return s.EnabledForBase("")
-}
-
-func (s *Service) EnabledForBase(requestBaseURL string) bool {
-	cfg := s.epayConfig()
-	notifyURL := s.resolveCallbackURL(cfg.NotifyURL, "", requestBaseURL, "/api/public/epay/notify")
-	returnURL := s.resolveCallbackURL(cfg.ReturnURL, "", requestBaseURL, "/api/public/epay/return")
-	return s.channelReady(cfg, notifyURL, returnURL)
-}
-
-func (s *Service) channelReady(cfg config.EPayConfig, notifyURL, returnURL string) bool {
-	return strings.TrimSpace(cfg.GatewayURL) != "" &&
-		strings.TrimSpace(cfg.PID) != "" &&
-		strings.TrimSpace(cfg.Key) != "" &&
-		strings.TrimSpace(notifyURL) != "" &&
-		strings.TrimSpace(returnURL) != ""
+	return s.cfg.GatewayURL != "" && s.cfg.PID != "" && s.cfg.Key != ""
 }
 
 // AdminEnabled 表示"管理员是否允许充值入口"(业务侧开关)。未注入 settings 视为允许。
@@ -130,19 +115,13 @@ type CreateInput struct {
 	PackageID uint64
 	// PayType 可选,决定 epay 网关跳出来默认哪种二维码。
 	// "" 让收银台自选;常见值 "alipay" / "wxpay"。
-	PayType        string
-	ClientIP       string
-	RequestBaseURL string
-	NotifyURL      string
-	ReturnURL      string
+	PayType  string
+	ClientIP string
 }
 
 // Create 创建订单并生成跳转 URL。
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Order, error) {
-	cfg := s.epayConfig()
-	notifyURL := s.resolveCallbackURL(cfg.NotifyURL, in.NotifyURL, in.RequestBaseURL, "/api/public/epay/notify")
-	returnURL := s.resolveCallbackURL(cfg.ReturnURL, in.ReturnURL, in.RequestBaseURL, "/api/public/epay/return")
-	if !s.channelReady(cfg, notifyURL, returnURL) {
+	if !s.Enabled() {
 		return nil, ErrChannelDisabled
 	}
 	// 充值总开关(settings 未注入时视为允许,兼容旧行为)
@@ -182,9 +161,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Order, error) {
 	if in.PayType != "" {
 		extra["type"] = in.PayType
 	}
-	payURL, err := s.signer().BuildPayURL(
-		cfg.GatewayURL, outTradeNo, pkg.Name,
-		pkg.PriceCNY, notifyURL, returnURL, extra,
+	payURL, err := s.signer.BuildPayURL(
+		s.cfg.GatewayURL, outTradeNo, pkg.Name,
+		pkg.PriceCNY, s.cfg.NotifyURL, s.cfg.ReturnURL, extra,
 	)
 	if err != nil {
 		return nil, err
@@ -232,103 +211,48 @@ func (s *Service) CancelByUser(ctx context.Context, userID, orderID uint64) erro
 // ---------- 回调入账 ----------
 
 // HandleNotify 异步回调处理。返回 (上游期望文本, error)。
-//   - 上游期望文本:按 epay 规范,无论"成功/已处理"都必须回 "success";
-//     只有完全没处理 / 有异常时才允许回其它内容,以触发上游重发。
-//   - 我们出于幂等,收到一笔**已入账**的订单再次回调,也回 "success"。
+//  - 上游期望文本:按 epay 规范,无论"成功/已处理"都必须回 "success";
+//    只有完全没处理 / 有异常时才允许回其它内容,以触发上游重发。
+//  - 我们出于幂等,收到一笔**已入账**的订单再次回调,也回 "success"。
 func (s *Service) HandleNotify(ctx context.Context, form url.Values) (string, error) {
-	pl, o, err := s.parseEPayCallback(ctx, form, "notify")
+	pl, err := s.signer.ParseNotify(form)
 	if err != nil {
-		return "fail", err
-	}
-
-	if err := s.applyPaidCallback(ctx, o, pl, "notify"); err != nil {
-		return "fail", err
-	}
-	return "success", nil
-}
-
-// ReturnResult 是同步回跳页需要展示的支付结果摘要。
-type ReturnResult struct {
-	OutTradeNo  string
-	TradeNo     string
-	TradeStatus string
-	OrderStatus string
-	Paid        bool
-}
-
-// HandleReturn 处理 return_url 的浏览器同步回跳。
-// return_url 和 notify_url 参数格式相同,这里同样验签并尝试幂等入账,再交给 handler 跳转到前端结果页。
-func (s *Service) HandleReturn(ctx context.Context, form url.Values) (*ReturnResult, error) {
-	res := &ReturnResult{
-		OutTradeNo:  form.Get("out_trade_no"),
-		TradeNo:     form.Get("trade_no"),
-		TradeStatus: form.Get("trade_status"),
-		OrderStatus: StatusPending,
-	}
-
-	pl, o, err := s.parseEPayCallback(ctx, form, "return")
-	if err != nil {
-		return res, err
-	}
-	res.OutTradeNo = pl.OutTradeNo
-	res.TradeNo = pl.TradeNo
-	res.TradeStatus = pl.TradeStatus
-	res.OrderStatus = o.Status
-
-	if err := s.applyPaidCallback(ctx, o, pl, "return"); err != nil {
-		return res, err
-	}
-	if pl.TradeStatus == "TRADE_SUCCESS" && o.Status != StatusPaid {
-		if latest, err := s.dao.GetByOutTradeNo(ctx, pl.OutTradeNo); err == nil {
-			res.OrderStatus = latest.Status
-		}
-	}
-	res.Paid = res.OrderStatus == StatusPaid
-	return res, nil
-}
-
-func (s *Service) parseEPayCallback(ctx context.Context, form url.Values, source string) (*epay.NotifyPayload, *Order, error) {
-	pl, err := s.signer().ParseNotify(form)
-	if err != nil {
-		s.log.Warn(source+" signature invalid",
+		s.log.Warn("notify signature invalid",
 			zap.String("out_trade_no", form.Get("out_trade_no")))
-		return nil, nil, err
+		return "fail", err
 	}
 	o, err := s.dao.GetByOutTradeNo(ctx, pl.OutTradeNo)
 	if err != nil {
-		s.log.Warn(source+" order not found",
+		s.log.Warn("notify order not found",
 			zap.String("out_trade_no", pl.OutTradeNo))
-		return nil, nil, err
+		return "fail", err
 	}
-	return pl, o, nil
-}
 
-func (s *Service) applyPaidCallback(ctx context.Context, o *Order, pl *epay.NotifyPayload, source string) error {
 	// 幂等
 	if o.Status == StatusPaid {
-		return nil
+		return "success", nil
 	}
 	if pl.TradeStatus != "TRADE_SUCCESS" {
-		// 上游可能先发一笔"等待付款"之类中间状态,这里简单确认,后续成功通知再覆盖。
-		return nil
+		// 上游可能先发一笔"等待付款"之类中间状态,这里简单回 success,后续覆盖。
+		return "success", nil
 	}
 
 	// 金额二次校验:money 是 "元",priceCNY 是 "分"
 	if err := verifyAmount(pl.Money, o.PriceCNY); err != nil {
-		s.log.Warn(source+" amount mismatch",
+		s.log.Warn("notify amount mismatch",
 			zap.String("out_trade_no", pl.OutTradeNo),
 			zap.String("got_money", pl.Money),
 			zap.Int("want_fen", o.PriceCNY))
-		return err
+		return "fail", err
 	}
 
 	if err := s.settle(ctx, o, pl); err != nil {
-		s.log.Error(source+" settle failed",
+		s.log.Error("notify settle failed",
 			zap.String("out_trade_no", pl.OutTradeNo),
 			zap.Error(err))
-		return err
+		return "fail", err
 	}
-	return nil
+	return "success", nil
 }
 
 // settle 单次入账:更新订单为 paid + billing.Recharge 增加积分。
@@ -396,99 +320,6 @@ func (s *Service) AdminListOrders(ctx context.Context, f ListFilter, offset, lim
 	return s.dao.List(ctx, f, offset, limit)
 }
 
-// PaymentConfig 是后台支付管理页使用的易支付配置视图。
-type PaymentConfig struct {
-	GatewayURL         string `json:"gateway_url"`
-	PID                string `json:"pid"`
-	NotifyURL          string `json:"notify_url"`
-	ReturnURL          string `json:"return_url"`
-	SignType           string `json:"sign_type"`
-	KeySet             bool   `json:"key_set"`
-	KeyMask            string `json:"key_mask"`
-	EffectiveNotifyURL string `json:"effective_notify_url"`
-	EffectiveReturnURL string `json:"effective_return_url"`
-	ChannelReady       bool   `json:"channel_ready"`
-	RechargeEnabled    bool   `json:"recharge_enabled"`
-}
-
-// PaymentConfigUpdate 是后台保存易支付配置的输入。
-// Key 为空表示不修改既有密钥;其它字段允许保存为空,此时运行时回退到 YAML 配置。
-type PaymentConfigUpdate struct {
-	GatewayURL      string
-	PID             string
-	Key             string
-	NotifyURL       string
-	ReturnURL       string
-	SignType        string
-	RechargeEnabled bool
-}
-
-func (s *Service) AdminPaymentConfig() PaymentConfig {
-	return s.AdminPaymentConfigForBase("")
-}
-
-func (s *Service) AdminPaymentConfigForBase(requestBaseURL string) PaymentConfig {
-	cfg := s.epayConfig()
-	notifyURL := s.resolveCallbackURL(cfg.NotifyURL, "", requestBaseURL, "/api/public/epay/notify")
-	returnURL := s.resolveCallbackURL(cfg.ReturnURL, "", requestBaseURL, "/api/public/epay/return")
-	return PaymentConfig{
-		GatewayURL:         cfg.GatewayURL,
-		PID:                cfg.PID,
-		NotifyURL:          cfg.NotifyURL,
-		ReturnURL:          cfg.ReturnURL,
-		SignType:           cfg.SignType,
-		KeySet:             strings.TrimSpace(cfg.Key) != "",
-		KeyMask:            maskSecret(cfg.Key),
-		EffectiveNotifyURL: notifyURL,
-		EffectiveReturnURL: returnURL,
-		ChannelReady:       s.channelReady(cfg, notifyURL, returnURL),
-		RechargeEnabled:    s.AdminEnabled(),
-	}
-}
-
-func (s *Service) AdminUpdatePaymentConfig(ctx context.Context, in PaymentConfigUpdate) error {
-	if s.settings == nil {
-		return ErrSettingsUnavailable
-	}
-	signType := strings.ToUpper(strings.TrimSpace(in.SignType))
-	if signType == "" {
-		signType = "MD5"
-	}
-	if signType != "MD5" {
-		return fmt.Errorf("unsupported sign_type: %s", signType)
-	}
-	for name, raw := range map[string]string{
-		"gateway_url": strings.TrimSpace(in.GatewayURL),
-		"notify_url":  strings.TrimSpace(in.NotifyURL),
-		"return_url":  strings.TrimSpace(in.ReturnURL),
-	} {
-		if raw == "" {
-			continue
-		}
-		if err := validateHTTPURL(raw); err != nil {
-			return fmt.Errorf("%s invalid: %w", name, err)
-		}
-	}
-
-	items := map[string]string{
-		settings.EPayGatewayURL: strings.TrimSpace(in.GatewayURL),
-		settings.EPayPID:        strings.TrimSpace(in.PID),
-		settings.EPayNotifyURL:  strings.TrimSpace(in.NotifyURL),
-		settings.EPayReturnURL:  strings.TrimSpace(in.ReturnURL),
-		settings.EPaySignType:   signType,
-		settings.RechargeEnabled: func() string {
-			if in.RechargeEnabled {
-				return "true"
-			}
-			return "false"
-		}(),
-	}
-	if strings.TrimSpace(in.Key) != "" {
-		items[settings.EPayKey] = strings.TrimSpace(in.Key)
-	}
-	return s.settings.Set(ctx, items)
-}
-
 // AdminForcePaid 管理员手工将 pending 订单置为已支付并入账(发卡出错时的应急通道)。
 func (s *Service) AdminForcePaid(ctx context.Context, orderID uint64, actorID uint64) error {
 	o, err := s.dao.GetByID(ctx, orderID)
@@ -534,106 +365,6 @@ func rawDump(m map[string]string) *string {
 	}
 	s := v.Encode()
 	return &s
-}
-
-func (s *Service) signer() *epay.Signer {
-	cfg := s.epayConfig()
-	return epay.NewSigner(cfg.PID, cfg.Key, cfg.SignType)
-}
-
-func (s *Service) epayConfig() config.EPayConfig {
-	cfg := s.cfg
-	if s.settings != nil {
-		if v := s.settings.EPayGatewayURL(); v != "" {
-			cfg.GatewayURL = v
-		}
-		if v := s.settings.EPayPID(); v != "" {
-			cfg.PID = v
-		}
-		if v := s.settings.EPayKey(); v != "" {
-			cfg.Key = v
-		}
-		if v := s.settings.EPayNotifyURL(); v != "" {
-			cfg.NotifyURL = v
-		}
-		if v := s.settings.EPayReturnURL(); v != "" {
-			cfg.ReturnURL = v
-		}
-		if v := s.settings.EPaySignType(); v != "" {
-			cfg.SignType = v
-		}
-	}
-	cfg.GatewayURL = strings.TrimSpace(cfg.GatewayURL)
-	cfg.PID = strings.TrimSpace(cfg.PID)
-	cfg.Key = strings.TrimSpace(cfg.Key)
-	cfg.NotifyURL = strings.TrimSpace(cfg.NotifyURL)
-	cfg.ReturnURL = strings.TrimSpace(cfg.ReturnURL)
-	cfg.SignType = strings.ToUpper(strings.TrimSpace(cfg.SignType))
-	if cfg.SignType == "" {
-		cfg.SignType = "MD5"
-	}
-	return cfg
-}
-
-func (s *Service) notifyURL() string {
-	return s.resolveCallbackURL(s.epayConfig().NotifyURL, "", "", "/api/public/epay/notify")
-}
-
-func (s *Service) returnURL() string {
-	return s.resolveCallbackURL(s.epayConfig().ReturnURL, "", "", "/api/public/epay/return")
-}
-
-func (s *Service) resolveCallbackURL(configured, requested, requestBase, p string) string {
-	if v := strings.TrimSpace(requested); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(configured); v != "" {
-		return v
-	}
-	if v := callbackURLFromBase(requestBase, p); v != "" {
-		return v
-	}
-	return callbackURLFromBase(s.baseURL, p)
-}
-
-func callbackURLFromBase(base, p string) string {
-	base = strings.TrimSpace(base)
-	if base == "" {
-		return ""
-	}
-	u, err := url.Parse(base)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + p
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String()
-}
-
-func validateHTTPURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return err
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("scheme must be http or https")
-	}
-	if u.Host == "" {
-		return errors.New("host required")
-	}
-	return nil
-}
-
-func maskSecret(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return ""
-	}
-	if len(v) <= 8 {
-		return "********"
-	}
-	return v[:4] + strings.Repeat("*", len(v)-8) + v[len(v)-4:]
 }
 
 // verifyAmount 把 "12.00" 和 1200(分) 对比。

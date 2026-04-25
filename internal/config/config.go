@@ -75,19 +75,19 @@ type SchedulerConfig struct {
 }
 
 type UpstreamConfig struct {
-	BaseURL           string `mapstructure:"base_url"`
-	RequestTimeoutSec int    `mapstructure:"request_timeout_sec"`
-	SSEReadTimeoutSec int    `mapstructure:"sse_read_timeout_sec"`
+	BaseURL            string `mapstructure:"base_url"`
+	RequestTimeoutSec  int    `mapstructure:"request_timeout_sec"`
+	SSEReadTimeoutSec  int    `mapstructure:"sse_read_timeout_sec"`
 }
 
 // BackupConfig 数据库备份配置。
 type BackupConfig struct {
-	Dir          string `mapstructure:"dir"`           // 备份落盘目录,默认 /app/data/backups
-	Retention    int    `mapstructure:"retention"`     // 保留最近 N 个(>0),0 表示不自动清理
-	MysqldumpBin string `mapstructure:"mysqldump_bin"` // 默认 mysqldump
-	MysqlBin     string `mapstructure:"mysql_bin"`     // 恢复用,默认 mysql
-	MaxUploadMB  int    `mapstructure:"max_upload_mb"` // 上传 .sql.gz 上限,默认 512
-	AllowRestore bool   `mapstructure:"allow_restore"` // 是否允许 /restore 端点(生产强烈建议 false 手动切)
+	Dir           string `mapstructure:"dir"`            // 备份落盘目录,默认 /app/data/backups
+	Retention     int    `mapstructure:"retention"`      // 保留最近 N 个(>0),0 表示不自动清理
+	MysqldumpBin  string `mapstructure:"mysqldump_bin"`  // 默认 mysqldump
+	MysqlBin      string `mapstructure:"mysql_bin"`      // 恢复用,默认 mysql
+	MaxUploadMB   int    `mapstructure:"max_upload_mb"`  // 上传 .sql.gz 上限,默认 512
+	AllowRestore  bool   `mapstructure:"allow_restore"`  // 是否允许 /restore 端点(生产强烈建议 false 手动切)
 }
 
 type EPayConfig struct {
@@ -96,9 +96,9 @@ type EPayConfig struct {
 	GatewayURL string `mapstructure:"gateway_url"`
 	PID        string `mapstructure:"pid"`
 	Key        string `mapstructure:"key"`
-	// NotifyURL 后端异步回调;为空时优先使用当前请求域名,再回退到 app.base_url + /api/public/epay/notify。
+	// NotifyURL 后端异步回调(必填完整 https,不要带 query)
 	NotifyURL string `mapstructure:"notify_url"`
-	// ReturnURL 支付完成浏览器同步回跳;为空时优先使用当前请求域名,再回退到 app.base_url + /api/public/epay/return。
+	// ReturnURL 支付成功浏览器跳回(前端路由页,如 /billing)
 	ReturnURL string `mapstructure:"return_url"`
 	// SignType 目前只支持 MD5,保留扩展位。
 	SignType string `mapstructure:"sign_type"`
