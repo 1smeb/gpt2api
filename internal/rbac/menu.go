@@ -39,7 +39,7 @@ var menuTree = []Menu{
 	{
 		Key: "admin", Title: "后台管理", Icon: "Setting", Path: "/admin",
 		Perms: []Permission{PermUserRead, PermAccountRead, PermProxyRead,
-			PermUsageReadAll, PermSystemBackup}, // 任一 admin 权限即可看到大入口
+			PermUsageReadAll, PermPaymentManage, PermSystemSetting, PermSystemBackup}, // 任一 admin 权限即可看到大入口
 		Children: []Menu{
 			{Key: "admin.users", Title: "用户管理", Icon: "UserFilled", Path: "/admin/users",
 				Perms: []Permission{PermUserRead}},
@@ -47,6 +47,8 @@ var menuTree = []Menu{
 				Perms: []Permission{PermUserCredit}},
 			{Key: "admin.recharges", Title: "充值订单", Icon: "CreditCard", Path: "/admin/recharges",
 				Perms: []Permission{PermRechargeManage}},
+			{Key: "admin.payment", Title: "支付管理", Icon: "Money", Path: "/admin/payment",
+				Perms: []Permission{PermPaymentManage}},
 			{Key: "admin.accounts", Title: "GPT账号", Icon: "Connection", Path: "/admin/accounts",
 				Perms: []Permission{PermAccountRead}},
 			{Key: "admin.proxies", Title: "代理管理", Icon: "Guide", Path: "/admin/proxies",

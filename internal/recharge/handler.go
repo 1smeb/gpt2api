@@ -2,6 +2,8 @@ package recharge
 
 import (
 	"errors"
+	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -130,4 +132,50 @@ func (h *Handler) EPayNotify(c *gin.Context) {
 	form := c.Request.Form
 	text, _ := h.svc.HandleNotify(c.Request.Context(), form)
 	c.String(200, text)
+}
+
+// GET /api/public/epay/return
+// return_url 是浏览器同步回跳页:验签、幂等入账后跳到前端展示页。
+func (h *Handler) EPayReturn(c *gin.Context) {
+	if err := c.Request.ParseForm(); err != nil {
+		h.redirectPayReturn(c, nil, err)
+		return
+	}
+	result, err := h.svc.HandleReturn(c.Request.Context(), c.Request.Form)
+	h.redirectPayReturn(c, result, err)
+}
+
+func (h *Handler) redirectPayReturn(c *gin.Context, result *ReturnResult, err error) {
+	q := url.Values{}
+	status := "pending"
+	message := "支付结果待确认,请稍后刷新订单"
+
+	if result != nil {
+		if result.OutTradeNo != "" {
+			q.Set("out_trade_no", result.OutTradeNo)
+		}
+		if result.TradeNo != "" {
+			q.Set("trade_no", result.TradeNo)
+		}
+		if result.TradeStatus != "" {
+			q.Set("trade_status", result.TradeStatus)
+		}
+		if result.OrderStatus != "" {
+			q.Set("order_status", result.OrderStatus)
+		}
+	}
+
+	if err != nil {
+		status = "failed"
+		message = "支付结果校验失败,请返回账单页刷新或联系客服"
+	} else if result != nil && result.Paid {
+		status = "paid"
+		message = "支付成功,积分已到账"
+	} else if result != nil && result.TradeStatus != "" && result.TradeStatus != "TRADE_SUCCESS" {
+		message = "支付尚未完成,请稍后刷新订单"
+	}
+
+	q.Set("status", status)
+	q.Set("message", message)
+	c.Redirect(http.StatusFound, "/pay/return?"+q.Encode())
 }

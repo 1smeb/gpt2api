@@ -29,6 +29,7 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: 'login', component: () => import('@/views/auth/Login.vue'), meta: { public: true, title: '登录' } },
       { path: 'register', component: () => import('@/views/auth/Register.vue'), meta: { public: true, title: '注册' } },
+      { path: 'pay/return', component: () => import('@/views/PayReturn.vue'), meta: { public: true, title: '支付结果' } },
     ],
   },
   {
@@ -64,6 +65,8 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '积分管理', perm: 'user:credit' } },
       { path: 'recharges', component: () => import('@/views/admin/Recharges.vue'),
         meta: { title: '充值订单', perm: 'recharge:manage' } },
+      { path: 'payment', component: () => import('@/views/admin/Payment.vue'),
+        meta: { title: '支付管理', perm: 'payment:manage' } },
       { path: 'accounts', component: () => import('@/views/admin/Accounts.vue'),
         meta: { title: 'GPT账号', perm: 'account:read' } },
       { path: 'proxies', component: () => import('@/views/admin/Proxies.vue'),

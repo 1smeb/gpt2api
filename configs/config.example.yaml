@@ -58,7 +58,9 @@ epay:
   gateway_url: ""
   pid: ""
   key: ""
+  # 为空时自动使用 app.base_url + /api/public/epay/notify
   notify_url: ""
+  # 为空时自动使用 app.base_url + /api/public/epay/return
   return_url: ""
   sign_type: "MD5"
   expires_min: 30
