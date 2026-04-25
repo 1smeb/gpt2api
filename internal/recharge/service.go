@@ -3,10 +3,13 @@ package recharge
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -19,13 +22,13 @@ import (
 )
 
 var (
-	ErrPackageUnavailable  = errors.New("recharge: package not available")
-	ErrChannelDisabled     = errors.New("recharge: pay channel disabled")
-	ErrOrderNotFound       = errors.New("recharge: order not found")
-	ErrOrderStateInvalid   = errors.New("recharge: order state invalid")
-	ErrRechargeDisabled    = errors.New("recharge: recharge is disabled by admin")
-	ErrAmountOutOfRange    = errors.New("recharge: amount out of allowed range")
-	ErrDailyLimitExceeded  = errors.New("recharge: daily limit exceeded")
+	ErrPackageUnavailable = errors.New("recharge: package not available")
+	ErrChannelDisabled    = errors.New("recharge: pay channel disabled")
+	ErrOrderNotFound      = errors.New("recharge: order not found")
+	ErrOrderStateInvalid  = errors.New("recharge: order state invalid")
+	ErrRechargeDisabled   = errors.New("recharge: recharge is disabled by admin")
+	ErrAmountOutOfRange   = errors.New("recharge: amount out of allowed range")
+	ErrDailyLimitExceeded = errors.New("recharge: daily limit exceeded")
 )
 
 // Service 协调下单、回调入账、查询。
@@ -65,7 +68,30 @@ func NewService(dao *DAO, bill *billing.Engine, users *user.DAO,
 
 // Enabled 表示 epay 通道是否已配置完整(运维侧)。
 func (s *Service) Enabled() bool {
-	return s.cfg.GatewayURL != "" && s.cfg.PID != "" && s.cfg.Key != ""
+	return s.cfg.GatewayURL != "" && s.cfg.PID != "" && s.cfg.Key != "" &&
+		s.notifyURL() != "" && s.returnURL() != ""
+}
+
+func (s *Service) notifyURL() string {
+	if strings.TrimSpace(s.cfg.NotifyURL) != "" {
+		return strings.TrimSpace(s.cfg.NotifyURL)
+	}
+	return s.publicURL("/api/public/epay/notify")
+}
+
+func (s *Service) returnURL() string {
+	if strings.TrimSpace(s.cfg.ReturnURL) != "" {
+		return strings.TrimSpace(s.cfg.ReturnURL)
+	}
+	return s.publicURL("/api/public/epay/return")
+}
+
+func (s *Service) publicURL(path string) string {
+	base := strings.TrimRight(strings.TrimSpace(s.baseURL), "/")
+	if base == "" {
+		return ""
+	}
+	return base + path
 }
 
 // AdminEnabled 表示"管理员是否允许充值入口"(业务侧开关)。未注入 settings 视为允许。
@@ -163,7 +189,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Order, error) {
 	}
 	payURL, err := s.signer.BuildPayURL(
 		s.cfg.GatewayURL, outTradeNo, pkg.Name,
-		pkg.PriceCNY, s.cfg.NotifyURL, s.cfg.ReturnURL, extra,
+		pkg.PriceCNY, s.notifyURL(), s.returnURL(), extra,
 	)
 	if err != nil {
 		return nil, err
@@ -211,14 +237,26 @@ func (s *Service) CancelByUser(ctx context.Context, userID, orderID uint64) erro
 // ---------- 回调入账 ----------
 
 // HandleNotify 异步回调处理。返回 (上游期望文本, error)。
-//  - 上游期望文本:按 epay 规范,无论"成功/已处理"都必须回 "success";
-//    只有完全没处理 / 有异常时才允许回其它内容,以触发上游重发。
-//  - 我们出于幂等,收到一笔**已入账**的订单再次回调,也回 "success"。
+//   - 上游期望文本:按 epay 规范,无论"成功/已处理"都必须回 "success";
+//     只有完全没处理 / 有异常时才允许回其它内容,以触发上游重发。
+//   - 我们出于幂等,收到一笔**已入账**的订单再次回调,也回 "success"。
 func (s *Service) HandleNotify(ctx context.Context, form url.Values) (string, error) {
 	pl, err := s.signer.ParseNotify(form)
 	if err != nil {
 		s.log.Warn("notify signature invalid",
 			zap.String("out_trade_no", form.Get("out_trade_no")))
+		return "fail", err
+	}
+	if pl.OutTradeNo == "" {
+		err := errors.New("notify out_trade_no empty")
+		s.log.Warn("notify order no empty")
+		return "fail", err
+	}
+	if pid := strings.TrimSpace(pl.Raw["pid"]); pid != "" && s.cfg.PID != "" && pid != s.cfg.PID {
+		err := errors.New("notify pid mismatch")
+		s.log.Warn("notify pid mismatch",
+			zap.String("out_trade_no", pl.OutTradeNo),
+			zap.String("got_pid", pid))
 		return "fail", err
 	}
 	o, err := s.dao.GetByOutTradeNo(ctx, pl.OutTradeNo)
@@ -228,8 +266,8 @@ func (s *Service) HandleNotify(ctx context.Context, form url.Values) (string, er
 		return "fail", err
 	}
 
-	// 幂等
-	if o.Status == StatusPaid {
+	// completed 表示已支付且已履约,重复通知直接确认。
+	if o.Status == StatusCompleted {
 		return "success", nil
 	}
 	if pl.TradeStatus != "TRADE_SUCCESS" {
@@ -246,53 +284,249 @@ func (s *Service) HandleNotify(ctx context.Context, form url.Values) (string, er
 		return "fail", err
 	}
 
-	if err := s.settle(ctx, o, pl); err != nil {
+	fulfilledOrder, fulfilled, err := s.settle(ctx, o, pl)
+	if err != nil {
 		s.log.Error("notify settle failed",
 			zap.String("out_trade_no", pl.OutTradeNo),
 			zap.Error(err))
 		return "fail", err
 	}
+	if fulfilled {
+		s.sendPaidMail(ctx, fulfilledOrder)
+	}
 	return "success", nil
 }
 
-// settle 单次入账:更新订单为 paid + billing.Recharge 增加积分。
-// 这里用两段式:先在 recharge 事务内把订单 CAS 成 paid,再调用 billing。
-// billing 内部自己开事务,两段失败时会在日志里留痕(极罕见,需要人工对账)。
-func (s *Service) settle(ctx context.Context, o *Order, pl *epay.NotifyPayload) error {
-	// CAS: pending -> paid,避免双发回调重复入账
+// ReturnResult 是 return_url 的展示结果。它只用于用户提示,不能驱动入账。
+type ReturnResult struct {
+	OutTradeNo  string
+	TradeStatus string
+	LocalStatus string
+	Trusted     bool
+	Message     string
+}
+
+// HandleReturn 处理浏览器回跳。return_url 不可信,这里只验签和查询本地状态,绝不改订单/加积分。
+func (s *Service) HandleReturn(ctx context.Context, form url.Values) ReturnResult {
+	outTradeNo := strings.TrimSpace(form.Get("out_trade_no"))
+	ret := ReturnResult{
+		OutTradeNo: outTradeNo,
+		Message:    "支付结果正在确认,请返回账单页刷新。",
+	}
+	pl, err := s.signer.ParseNotify(form)
+	if err != nil {
+		s.log.Warn("return signature invalid", zap.String("out_trade_no", outTradeNo))
+		return ret
+	}
+	ret.Trusted = true
+	ret.OutTradeNo = pl.OutTradeNo
+	ret.TradeStatus = pl.TradeStatus
+
+	o, err := s.dao.GetByOutTradeNo(ctx, pl.OutTradeNo)
+	if err != nil {
+		s.log.Warn("return order not found", zap.String("out_trade_no", pl.OutTradeNo))
+		ret.Message = "订单不存在或尚未同步,请返回账单页刷新。"
+		return ret
+	}
+	ret.LocalStatus = o.Status
+	switch o.Status {
+	case StatusCompleted:
+		ret.Message = "充值已到账。"
+	case StatusPaid:
+		ret.Message = "支付已确认,系统正在完成入账。"
+	case StatusFulfillmentFailed:
+		ret.Message = "支付已确认,但入账履约失败,请联系管理员处理。"
+	case StatusPending:
+		ret.Message = "已收到支付回跳,等待服务端异步通知确认。"
+	case StatusExpired:
+		ret.Message = "本地订单已超时,如已付款请等待服务端异步通知或联系管理员。"
+	case StatusCancelled:
+		ret.Message = "本地订单已取消,如已付款请等待服务端异步通知或联系管理员。"
+	default:
+		ret.Message = "支付结果正在确认,请返回账单页刷新。"
+	}
+	return ret
+}
+
+// settle 单次入账:
+//  1. 验签/金额已在调用方完成;
+//  2. 先记录支付成功:pending/expired/cancelled -> paid;
+//  3. 再在一个事务里执行幂等履约:加积分 + 写流水 + paid -> completed。
+func (s *Service) settle(ctx context.Context, o *Order, pl *epay.NotifyPayload) (*Order, bool, error) {
+	if err := s.markPaid(ctx, pl); err != nil {
+		return nil, false, err
+	}
+	fulfilledOrder, fulfilled, err := s.fulfillPaidOrder(ctx, o.OutTradeNo)
+	if err != nil {
+		if markErr := s.markFulfillmentFailed(ctx, o.OutTradeNo); markErr != nil {
+			s.log.Error("mark fulfillment failed status failed",
+				zap.String("out_trade_no", o.OutTradeNo),
+				zap.Error(markErr))
+		}
+		return nil, false, err
+	}
+	return fulfilledOrder, fulfilled, nil
+}
+
+func (s *Service) markPaid(ctx context.Context, pl *epay.NotifyPayload) error {
+	raw := rawDump(pl.Raw)
+	// 支付成功回调是权威信号。即便本地 pending 已被用户取消或超时,只要验签和金额通过,仍记录为 paid。
 	res, err := s.dao.DB().ExecContext(ctx,
 		`UPDATE recharge_orders
            SET status = ?, trade_no = ?, pay_method = ?, paid_at = NOW(),
                notify_raw = ?
-         WHERE id = ? AND status = ?`,
-		StatusPaid, pl.TradeNo, pl.Type, rawDump(pl.Raw), o.ID, StatusPending)
+         WHERE out_trade_no = ?
+           AND status IN (?, ?, ?)`,
+		StatusPaid, pl.TradeNo, pl.Type, raw, pl.OutTradeNo,
+		StatusPending, StatusExpired, StatusCancelled)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
-	if n == 0 {
-		// 并发下已被另一条回调处理过
+	if n > 0 {
 		return nil
 	}
 
-	refID := fmt.Sprintf("order:%s", o.OutTradeNo)
-	remark := fmt.Sprintf("充值:%s", o.Remark)
-	total := o.TotalCredits()
-	if err := s.billing.Recharge(ctx, o.UserID, total, refID, remark); err != nil {
-		// 钱到了但积分没加 —— 回滚到 pending 等待人工介入
-		s.log.Error("BILLING FAILED AFTER PAID, needs manual intervention",
-			zap.String("out_trade_no", o.OutTradeNo), zap.Error(err))
+	// 已经是 paid/completed/fulfillment_failed 的重复通知只刷新上游信息,不改变主状态。
+	res, err = s.dao.DB().ExecContext(ctx,
+		`UPDATE recharge_orders
+            SET trade_no = COALESCE(NULLIF(?, ''), trade_no),
+                pay_method = COALESCE(NULLIF(?, ''), pay_method),
+                notify_raw = ?
+          WHERE out_trade_no = ?
+            AND status IN (?, ?, ?)`,
+		pl.TradeNo, pl.Type, raw, pl.OutTradeNo,
+		StatusPaid, StatusCompleted, StatusFulfillmentFailed)
+	if err != nil {
 		return err
 	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	return ErrOrderStateInvalid
+}
 
-	// 异步邮件通知(失败不影响主流程)
+func (s *Service) fulfillPaidOrder(ctx context.Context, outTradeNo string) (*Order, bool, error) {
+	tx, err := s.dao.DB().BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var o Order
+	err = tx.GetContext(ctx, &o,
+		`SELECT * FROM recharge_orders WHERE out_trade_no = ? FOR UPDATE`, outTradeNo)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, ErrOrderNotFound
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if o.Status == StatusCompleted {
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		committed = true
+		return &o, false, nil
+	}
+	if o.Status != StatusPaid && o.Status != StatusFulfillmentFailed {
+		return nil, false, ErrOrderStateInvalid
+	}
+
+	refID := fmt.Sprintf("order:%s", o.OutTradeNo)
+	var existing int
+	if err := tx.GetContext(ctx, &existing,
+		`SELECT COUNT(*) FROM credit_transactions WHERE type = ? AND ref_id = ?`,
+		billing.KindRecharge, refID); err != nil {
+		return nil, false, err
+	}
+	if existing > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE recharge_orders SET status = ? WHERE id = ?`,
+			StatusCompleted, o.ID); err != nil {
+			return nil, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		committed = true
+		o.Status = StatusCompleted
+		return &o, false, nil
+	}
+
+	total := o.TotalCredits()
+	if total <= 0 {
+		return nil, false, errors.New("recharge credits must be positive")
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE users
+            SET credit_balance = credit_balance + ?, version = version + 1
+          WHERE id = ? AND deleted_at IS NULL`,
+		total, o.UserID)
+	if err != nil {
+		return nil, false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, false, fmt.Errorf("user %d not found", o.UserID)
+	}
+
+	var balanceAfter int64
+	if err := tx.QueryRowxContext(ctx,
+		`SELECT credit_balance FROM users WHERE id = ?`, o.UserID).Scan(&balanceAfter); err != nil {
+		return nil, false, err
+	}
+	remark := fmt.Sprintf("充值:%s", o.Remark)
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO credit_transactions
+            (user_id, key_id, type, amount, balance_after, ref_id, remark)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		o.UserID, 0, billing.KindRecharge, total, balanceAfter, refID, remark); err != nil {
+		return nil, false, err
+	}
+	res, err = tx.ExecContext(ctx,
+		`UPDATE recharge_orders
+            SET status = ?
+          WHERE id = ? AND status IN (?, ?)`,
+		StatusCompleted, o.ID, StatusPaid, StatusFulfillmentFailed)
+	if err != nil {
+		return nil, false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, false, ErrOrderStateInvalid
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	committed = true
+	o.Status = StatusCompleted
+	return &o, true, nil
+}
+
+func (s *Service) markFulfillmentFailed(ctx context.Context, outTradeNo string) error {
+	_, err := s.dao.DB().ExecContext(ctx,
+		`UPDATE recharge_orders
+            SET status = ?
+          WHERE out_trade_no = ?
+            AND status IN (?, ?)`,
+		StatusFulfillmentFailed, outTradeNo, StatusPaid, StatusFulfillmentFailed)
+	return err
+}
+
+func (s *Service) sendPaidMail(ctx context.Context, o *Order) {
+	if o == nil {
+		return
+	}
 	if s.mail != nil && !s.mail.Disabled() {
 		if u, err := s.users.GetByID(ctx, o.UserID); err == nil && u.Email != "" {
 			subject, html := mailer.RenderPaid(u.Nickname, o.OutTradeNo, o.PriceCNY, o.Credits, o.Bonus, nowUTC())
 			s.mail.Send(mailer.Message{To: u.Email, Subject: subject, HTML: html})
 		}
 	}
-	return nil
 }
 
 // ---------- admin/ Package 写 ----------
@@ -320,29 +554,42 @@ func (s *Service) AdminListOrders(ctx context.Context, f ListFilter, offset, lim
 	return s.dao.List(ctx, f, offset, limit)
 }
 
-// AdminForcePaid 管理员手工将 pending 订单置为已支付并入账(发卡出错时的应急通道)。
+// AdminForcePaid 管理员手工将 pending 订单置为已支付并入账,或重试 paid/fulfillment_failed 履约。
 func (s *Service) AdminForcePaid(ctx context.Context, orderID uint64, actorID uint64) error {
 	o, err := s.dao.GetByID(ctx, orderID)
 	if err != nil {
 		return err
 	}
-	if o.Status != StatusPending {
+	if o.Status != StatusPending && o.Status != StatusPaid && o.Status != StatusFulfillmentFailed {
 		return ErrOrderStateInvalid
 	}
-	res, err := s.dao.DB().ExecContext(ctx,
-		`UPDATE recharge_orders
-           SET status = ?, paid_at = NOW(), trade_no = IFNULL(NULLIF(trade_no,''), ?)
-         WHERE id = ? AND status = ?`,
-		StatusPaid, fmt.Sprintf("manual-%d", actorID), orderID, StatusPending)
+	if o.Status == StatusPending {
+		res, err := s.dao.DB().ExecContext(ctx,
+			`UPDATE recharge_orders
+               SET status = ?, paid_at = NOW(), trade_no = IFNULL(NULLIF(trade_no,''), ?)
+             WHERE id = ? AND status = ?`,
+			StatusPaid, fmt.Sprintf("manual-%d", actorID), orderID, StatusPending)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrOrderStateInvalid
+		}
+	}
+	fulfilledOrder, fulfilled, err := s.fulfillPaidOrder(ctx, o.OutTradeNo)
 	if err != nil {
+		if markErr := s.markFulfillmentFailed(ctx, o.OutTradeNo); markErr != nil {
+			s.log.Error("mark manual fulfillment failed status failed",
+				zap.String("out_trade_no", o.OutTradeNo),
+				zap.Uint64("actor_id", actorID),
+				zap.Error(markErr))
+		}
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrOrderStateInvalid
+	if fulfilled {
+		s.sendPaidMail(ctx, fulfilledOrder)
 	}
-	refID := fmt.Sprintf("order:%s", o.OutTradeNo)
-	remark := fmt.Sprintf("管理员手工入账:%s by admin=%d", o.Remark, actorID)
-	return s.billing.Recharge(ctx, o.UserID, o.TotalCredits(), refID, remark)
+	return nil
 }
 
 // ---------- helpers ----------
@@ -367,17 +614,41 @@ func rawDump(m map[string]string) *string {
 	return &s
 }
 
-// verifyAmount 把 "12.00" 和 1200(分) 对比。
+// verifyAmount 把 "12.00" 和 1200(分) 精确对比,避免 float 舍入误差。
 func verifyAmount(money string, wantFen int) error {
-	var f float64
-	if _, err := fmt.Sscanf(money, "%f", &f); err != nil {
-		return fmt.Errorf("invalid money: %w", err)
+	got, err := parseMoneyFen(money)
+	if err != nil {
+		return err
 	}
-	got := int(f*100 + 0.5)
 	if got != wantFen {
 		return fmt.Errorf("amount mismatch: got %d fen, want %d", got, wantFen)
 	}
 	return nil
+}
+
+func parseMoneyFen(money string) (int, error) {
+	s := strings.TrimSpace(money)
+	if s == "" || strings.HasPrefix(s, "-") {
+		return 0, fmt.Errorf("invalid money: %q", money)
+	}
+	parts := strings.SplitN(s, ".", 2)
+	yuan, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, fmt.Errorf("invalid money: %w", err)
+	}
+	fenText := "00"
+	if len(parts) == 2 {
+		frac := parts[1]
+		if len(frac) > 2 {
+			return 0, fmt.Errorf("invalid money precision: %q", money)
+		}
+		fenText = (frac + "00")[:2]
+	}
+	fen, err := strconv.Atoi(fenText)
+	if err != nil {
+		return 0, fmt.Errorf("invalid money: %w", err)
+	}
+	return yuan*100 + fen, nil
 }
 
 // nowUTC 抽离以便单测 stub。

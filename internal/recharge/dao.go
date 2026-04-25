@@ -162,7 +162,10 @@ func (d *DAO) SumPaidTodayCNY(ctx context.Context, userID uint64) (int64, error)
 	var sum sql.NullInt64
 	err := d.db.GetContext(ctx, &sum,
 		`SELECT COALESCE(SUM(price_cny), 0) FROM recharge_orders
-           WHERE user_id = ? AND status = 'paid' AND paid_at >= CURDATE()`, userID)
+           WHERE user_id = ?
+             AND status IN (?, ?, ?)
+             AND paid_at >= CURDATE()`,
+		userID, StatusPaid, StatusCompleted, StatusFulfillmentFailed)
 	if err != nil {
 		return 0, err
 	}

@@ -10,7 +10,7 @@ const packages = ref<rechargeApi.Package[]>([])
 const channelEnabled = ref(false)
 const orders = ref<rechargeApi.Order[]>([])
 const total = ref(0)
-const paging = reactive({ limit: 10, offset: 0, status: '' as '' | 'pending' | 'paid' | 'cancelled' | 'expired' })
+const paging = reactive({ limit: 10, offset: 0, status: '' as '' | 'pending' | 'paid' | 'completed' | 'cancelled' | 'expired' | 'fulfillment_failed' })
 const loadingPkg = ref(false)
 const loadingOrder = ref(false)
 
@@ -71,10 +71,10 @@ async function cancel(o: rechargeApi.Order) {
 }
 
 const statusColor: Record<string, 'success' | 'info' | 'warning' | 'danger'> = {
-  paid: 'success', pending: 'warning', cancelled: 'info', expired: 'info', failed: 'danger',
+  completed: 'success', paid: 'warning', pending: 'warning', cancelled: 'info', expired: 'info', fulfillment_failed: 'danger', failed: 'danger',
 }
 const statusLabel: Record<string, string> = {
-  paid: '已到账', pending: '待支付', cancelled: '已取消', expired: '已超时', failed: '失败',
+  completed: '已到账', paid: '入账中', pending: '待支付', cancelled: '已取消', expired: '已超时', fulfillment_failed: '入账失败', failed: '失败',
 }
 
 const currentPage = computed<number>({
@@ -152,9 +152,11 @@ onMounted(() => {
                      @change="() => { paging.offset = 0; loadOrders() }">
             <el-option label="全部" value="" />
             <el-option label="待支付" value="pending" />
-            <el-option label="已到账" value="paid" />
+            <el-option label="入账中" value="paid" />
+            <el-option label="已到账" value="completed" />
             <el-option label="已取消" value="cancelled" />
             <el-option label="已超时" value="expired" />
+            <el-option label="入账失败" value="fulfillment_failed" />
           </el-select>
           <el-button @click="loadOrders" :loading="loadingOrder">
             <el-icon><Refresh /></el-icon> 刷新
