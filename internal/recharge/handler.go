@@ -2,9 +2,11 @@ package recharge
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -17,6 +19,8 @@ type Handler struct{ svc *Service }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
+const maxEPayCallbackBodySize = 1 << 20
+
 // GET /api/recharge/packages
 // 返回已启用的套餐 + 通道状态。未登录也可访问(方便前端登录页展示定价)。
 func (h *Handler) ListPackages(c *gin.Context) {
@@ -25,10 +29,11 @@ func (h *Handler) ListPackages(c *gin.Context) {
 		resp.Internal(c, err.Error())
 		return
 	}
+	channelReady := h.svc.EnabledForBase(requestBaseURL(c.Request))
 	resp.OK(c, gin.H{
 		"items":          pkgs,
-		"enabled":        h.svc.Enabled() && h.svc.AdminEnabled(),
-		"channel_ready":  h.svc.Enabled(),
+		"enabled":        channelReady && h.svc.AdminEnabled(),
+		"channel_ready":  channelReady,
 		"admin_enabled":  h.svc.AdminEnabled(),
 		"min_cny":        h.svc.MinAmountCNY(),
 		"max_cny":        h.svc.MaxAmountCNY(),
@@ -54,10 +59,11 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		return
 	}
 	o, err := h.svc.Create(c.Request.Context(), CreateInput{
-		UserID:    uid,
-		PackageID: req.PackageID,
-		PayType:   req.PayType,
-		ClientIP:  c.ClientIP(),
+		UserID:         uid,
+		PackageID:      req.PackageID,
+		PayType:        req.PayType,
+		ClientIP:       c.ClientIP(),
+		RequestBaseURL: requestBaseURL(c.Request),
 	})
 	if err != nil {
 		switch {
@@ -124,12 +130,11 @@ func (h *Handler) CancelOrder(c *gin.Context) {
 // GET  /api/public/epay/notify
 // 按上游 ePay 规范,**响应必须是裸 "success"/"fail" 字符串**,不要被 resp 包装。
 func (h *Handler) EPayNotify(c *gin.Context) {
-	if err := c.Request.ParseForm(); err != nil {
+	form, err := epayCallbackValues(c.Request)
+	if err != nil {
 		c.String(200, "fail")
 		return
 	}
-	// ePay 可能 GET 也可能 POST,合并两种 values
-	form := c.Request.Form
 	text, _ := h.svc.HandleNotify(c.Request.Context(), form)
 	c.String(200, text)
 }
@@ -137,11 +142,12 @@ func (h *Handler) EPayNotify(c *gin.Context) {
 // GET /api/public/epay/return
 // return_url 是浏览器同步回跳页:验签、幂等入账后跳到前端展示页。
 func (h *Handler) EPayReturn(c *gin.Context) {
-	if err := c.Request.ParseForm(); err != nil {
+	form, err := epayCallbackValues(c.Request)
+	if err != nil {
 		h.redirectPayReturn(c, nil, err)
 		return
 	}
-	result, err := h.svc.HandleReturn(c.Request.Context(), c.Request.Form)
+	result, err := h.svc.HandleReturn(c.Request.Context(), form)
 	h.redirectPayReturn(c, result, err)
 }
 
@@ -178,4 +184,69 @@ func (h *Handler) redirectPayReturn(c *gin.Context, result *ReturnResult, err er
 	q.Set("status", status)
 	q.Set("message", message)
 	c.Redirect(http.StatusFound, "/pay/return?"+q.Encode())
+}
+
+func epayCallbackValues(r *http.Request) (url.Values, error) {
+	values := cloneValues(r.URL.Query())
+	if r.Body == nil || (r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch) {
+		return values, nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxEPayCallbackBodySize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxEPayCallbackBodySize {
+		return nil, errors.New("epay callback body too large")
+	}
+	raw := strings.TrimSpace(string(body))
+	if raw == "" {
+		return values, nil
+	}
+	bodyValues, err := url.ParseQuery(raw)
+	if err != nil {
+		return nil, err
+	}
+	for k, vs := range bodyValues {
+		values[k] = append([]string(nil), vs...)
+	}
+	return values, nil
+}
+
+func cloneValues(in url.Values) url.Values {
+	out := make(url.Values, len(in))
+	for k, vs := range in {
+		out[k] = append([]string(nil), vs...)
+	}
+	return out
+}
+
+func requestBaseURL(r *http.Request) string {
+	host := firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	if host == "" {
+		return ""
+	}
+
+	proto := strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto")))
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	if proto != "http" && proto != "https" {
+		return ""
+	}
+	return proto + "://" + host
+}
+
+func firstForwardedValue(v string) string {
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
 }

@@ -171,7 +171,7 @@ onMounted(load)
           </el-select>
         </el-form-item>
         <el-form-item label="异步通知地址">
-          <el-input v-model="form.notify_url" placeholder="留空自动生成" clearable>
+          <el-input v-model="form.notify_url" placeholder="留空按当前访问域名自动生成" clearable>
             <template #append>
               <el-button :icon="DocumentCopy" @click="copy(displayNotifyURL)" />
             </template>
@@ -179,7 +179,7 @@ onMounted(load)
           <div class="hint">当前生效: <code>{{ displayNotifyURL || '未生成' }}</code></div>
         </el-form-item>
         <el-form-item label="同步跳转地址">
-          <el-input v-model="form.return_url" placeholder="留空自动生成" clearable>
+          <el-input v-model="form.return_url" placeholder="留空按当前访问域名自动生成" clearable>
             <template #append>
               <el-button :icon="DocumentCopy" @click="copy(displayReturnURL)" />
             </template>

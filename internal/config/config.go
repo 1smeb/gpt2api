@@ -96,9 +96,9 @@ type EPayConfig struct {
 	GatewayURL string `mapstructure:"gateway_url"`
 	PID        string `mapstructure:"pid"`
 	Key        string `mapstructure:"key"`
-	// NotifyURL 后端异步回调;为空时默认 app.base_url + /api/public/epay/notify。
+	// NotifyURL 后端异步回调;为空时优先使用当前请求域名,再回退到 app.base_url + /api/public/epay/notify。
 	NotifyURL string `mapstructure:"notify_url"`
-	// ReturnURL 支付完成浏览器同步回跳;为空时默认 app.base_url + /api/public/epay/return。
+	// ReturnURL 支付完成浏览器同步回跳;为空时优先使用当前请求域名,再回退到 app.base_url + /api/public/epay/return。
 	ReturnURL string `mapstructure:"return_url"`
 	// SignType 目前只支持 MD5,保留扩展位。
 	SignType string `mapstructure:"sign_type"`

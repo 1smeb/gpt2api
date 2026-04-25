@@ -165,8 +165,8 @@ var Defs = []KeyDef{
 	{Key: EPayGatewayURL, Type: "url", Category: "payment", Default: "", Label: "易支付网关地址", Desc: "例如 https://pay.example.com/submit.php"},
 	{Key: EPayPID, Type: "string", Category: "payment", Default: "", Label: "商户 ID", Desc: "Z-Pay / 易支付商户 PID"},
 	{Key: EPayKey, Type: "string", Category: "payment", Default: "", Label: "商户密钥", Desc: "用于 MD5 签名校验"},
-	{Key: EPayNotifyURL, Type: "url", Category: "payment", Default: "", Label: "异步通知地址", Desc: "留空时使用 app.base_url + /api/public/epay/notify"},
-	{Key: EPayReturnURL, Type: "url", Category: "payment", Default: "", Label: "同步跳转地址", Desc: "留空时使用 app.base_url + /api/public/epay/return"},
+	{Key: EPayNotifyURL, Type: "url", Category: "payment", Default: "", Label: "异步通知地址", Desc: "留空时优先使用当前访问域名,再回退到 app.base_url + /api/public/epay/notify"},
+	{Key: EPayReturnURL, Type: "url", Category: "payment", Default: "", Label: "同步跳转地址", Desc: "留空时优先使用当前访问域名,再回退到 app.base_url + /api/public/epay/return"},
 	{Key: EPaySignType, Type: "string", Category: "payment", Default: "MD5", Label: "签名类型", Desc: "当前支持 MD5"},
 
 	// ---------- 邮件 ----------
