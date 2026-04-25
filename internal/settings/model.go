@@ -26,41 +26,41 @@ type KeyDef struct {
 // ---- key 常量 ----
 const (
 	// 通用
-	SiteName         = "site.name"
-	SiteDescription  = "site.description"
-	SiteLogoURL      = "site.logo_url"
-	SiteFooter       = "site.footer"
-	SiteContactEmail = "site.contact_email"
-	SiteDocsURL      = "site.docs_url"
-	SiteAPIBaseURL   = "site.api_base_url"
+	SiteName          = "site.name"
+	SiteDescription   = "site.description"
+	SiteLogoURL       = "site.logo_url"
+	SiteFooter        = "site.footer"
+	SiteContactEmail  = "site.contact_email"
+	SiteDocsURL       = "site.docs_url"
+	SiteAPIBaseURL    = "site.api_base_url"
 	UIDefaultPageSize = "ui.default_page_size"
 
 	// 安全与认证
-	AuthAllowRegister       = "auth.allow_register"
-	AuthRequireEmailVerify  = "auth.require_email_verify"
+	AuthAllowRegister        = "auth.allow_register"
+	AuthRequireEmailVerify   = "auth.require_email_verify"
 	AuthEmailDomainWhitelist = "auth.email_domain_whitelist"
-	AuthPasswordMinLength   = "auth.password_min_length"
-	AuthInviteCodeRequired  = "auth.invite_code_required"
-	Auth2FAEnabled          = "auth.2fa_enabled"
-	AuthJWTAccessTTLSec     = "auth.jwt_access_ttl_sec"
-	AuthJWTRefreshTTLSec    = "auth.jwt_refresh_ttl_sec"
+	AuthPasswordMinLength    = "auth.password_min_length"
+	AuthInviteCodeRequired   = "auth.invite_code_required"
+	Auth2FAEnabled           = "auth.2fa_enabled"
+	AuthJWTAccessTTLSec      = "auth.jwt_access_ttl_sec"
+	AuthJWTRefreshTTLSec     = "auth.jwt_refresh_ttl_sec"
 
 	// 用户默认值(旧 auth.* 保留兼容)
-	AuthDefaultGroupID       = "auth.default_group_id"
-	AuthSignupBonusCredits   = "auth.signup_bonus_credits"
-	LimitDefaultRPM          = "limit.default_rpm"
-	LimitDefaultTPM          = "limit.default_tpm"
-	KeyDefaultDailyQuota     = "key.default_daily_quota_credits"
-	KeyMaxPerUser            = "key.max_per_user"
+	AuthDefaultGroupID     = "auth.default_group_id"
+	AuthSignupBonusCredits = "auth.signup_bonus_credits"
+	LimitDefaultRPM        = "limit.default_rpm"
+	LimitDefaultTPM        = "limit.default_tpm"
+	KeyDefaultDailyQuota   = "key.default_daily_quota_credits"
+	KeyMaxPerUser          = "key.max_per_user"
 
 	// 网关与调度
-	GatewayUpstreamTimeoutSec = "gateway.upstream_timeout_sec"
-	GatewaySSEReadTimeoutSec  = "gateway.sse_read_timeout_sec"
-	GatewayCooldown429Sec     = "gateway.cooldown_429_sec"
-	GatewayWarnedPauseHours   = "gateway.warned_pause_hours"
-	GatewayDailyUsageRatio    = "gateway.daily_usage_ratio"
-	GatewayRetryOnFailure     = "gateway.retry_on_failure"
-	GatewayRetryMax           = "gateway.retry_max"
+	GatewayUpstreamTimeoutSec   = "gateway.upstream_timeout_sec"
+	GatewaySSEReadTimeoutSec    = "gateway.sse_read_timeout_sec"
+	GatewayCooldown429Sec       = "gateway.cooldown_429_sec"
+	GatewayWarnedPauseHours     = "gateway.warned_pause_hours"
+	GatewayDailyUsageRatio      = "gateway.daily_usage_ratio"
+	GatewayRetryOnFailure       = "gateway.retry_on_failure"
+	GatewayRetryMax             = "gateway.retry_max"
 	GatewayDispatchQueueWaitSec = "gateway.dispatch_queue_wait_sec"
 
 	// 代理管理(健康探测)
@@ -80,13 +80,19 @@ const (
 	AccountDefaultClientID       = "account.default_client_id"
 
 	// 计费与充值
-	BillingCreditPerCNY         = "billing.credit_per_cny"
-	BillingNotifyAdminOnAdjust  = "billing.notify_admin_on_adjust"
-	RechargeEnabled             = "recharge.enabled"
-	RechargeMinCNY              = "recharge.min_cny"
-	RechargeMaxCNY              = "recharge.max_cny"
-	RechargeDailyLimitCNY       = "recharge.daily_limit_cny"
-	RechargeOrderExpireMinutes  = "recharge.order_expire_minutes"
+	BillingCreditPerCNY        = "billing.credit_per_cny"
+	BillingNotifyAdminOnAdjust = "billing.notify_admin_on_adjust"
+	RechargeEnabled            = "recharge.enabled"
+	RechargeMinCNY             = "recharge.min_cny"
+	RechargeMaxCNY             = "recharge.max_cny"
+	RechargeDailyLimitCNY      = "recharge.daily_limit_cny"
+	RechargeOrderExpireMinutes = "recharge.order_expire_minutes"
+	EPayGatewayURL             = "epay.gateway_url"
+	EPayPID                    = "epay.pid"
+	EPayKey                    = "epay.key"
+	EPayNotifyURL              = "epay.notify_url"
+	EPayReturnURL              = "epay.return_url"
+	EPaySignType               = "epay.sign_type"
 
 	// 邮件
 	MailEnabledDisplay = "mail.enabled_display"
@@ -156,6 +162,12 @@ var Defs = []KeyDef{
 	{Key: RechargeMaxCNY, Type: "int", Category: "billing", Default: "0", Label: "最高金额(分)", Desc: "0=不限"},
 	{Key: RechargeDailyLimitCNY, Type: "int", Category: "billing", Default: "0", Label: "单用户每日上限(分)", Desc: "0=不限;按今日已支付订单金额累计"},
 	{Key: RechargeOrderExpireMinutes, Type: "int", Category: "billing", Default: "30", Label: "订单有效期(分钟)", Desc: "到期未支付自动取消"},
+	{Key: EPayGatewayURL, Type: "url", Category: "payment", Default: "", Label: "易支付网关地址", Desc: "例如 https://pay.example.com/submit.php"},
+	{Key: EPayPID, Type: "string", Category: "payment", Default: "", Label: "商户 ID", Desc: "Z-Pay / 易支付商户 PID"},
+	{Key: EPayKey, Type: "string", Category: "payment", Default: "", Label: "商户密钥", Desc: "用于 MD5 签名校验"},
+	{Key: EPayNotifyURL, Type: "url", Category: "payment", Default: "", Label: "异步通知地址", Desc: "留空时使用 app.base_url + /api/public/epay/notify"},
+	{Key: EPayReturnURL, Type: "url", Category: "payment", Default: "", Label: "同步跳转地址", Desc: "留空时使用 app.base_url + /api/public/epay/return"},
+	{Key: EPaySignType, Type: "string", Category: "payment", Default: "MD5", Label: "签名类型", Desc: "当前支持 MD5"},
 
 	// ---------- 邮件 ----------
 	{Key: MailEnabledDisplay, Type: "string", Category: "mail", Default: "auto", Label: "邮件开关展示", Desc: "auto/true/false;实际是否发邮件由 SMTP 配置决定"},
