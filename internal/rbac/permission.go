@@ -28,11 +28,11 @@ type Permission string
 
 const (
 	// --- 普通用户(self) ---
-	PermSelfProfile  = Permission("self:profile")  // 看/改自己资料
-	PermSelfKey      = Permission("self:key")      // 管自己 API Key
-	PermSelfUsage    = Permission("self:usage")    // 查自己 usage/账单
-	PermSelfRecharge = Permission("self:recharge") // 充值/查自己订单
-	PermSelfImage    = Permission("self:image")    // 自己生图任务
+	PermSelfProfile = Permission("self:profile")       // 看/改自己资料
+	PermSelfKey     = Permission("self:key")           // 管自己 API Key
+	PermSelfUsage   = Permission("self:usage")         // 查自己 usage/账单
+	PermSelfRecharge = Permission("self:recharge")     // 充值/查自己订单
+	PermSelfImage    = Permission("self:image")        // 自己生图任务
 
 	// --- 管理员(admin) ---
 	// 用户管理
@@ -59,7 +59,6 @@ const (
 	// 分组 / 计费
 	PermGroupWrite     = Permission("group:write")
 	PermRechargeManage = Permission("recharge:manage")
-	PermPaymentManage  = Permission("payment:manage")
 
 	// 统计 / 审计
 	PermUsageReadAll = Permission("usage:read_all")
@@ -91,7 +90,7 @@ var rolePermissions = map[string][]Permission{
 		PermProxyRead, PermProxyWrite,
 		PermModelRead, PermModelWrite,
 		PermChannelRead, PermChannelWrite,
-		PermGroupWrite, PermRechargeManage, PermPaymentManage,
+		PermGroupWrite, PermRechargeManage,
 		PermUsageReadAll, PermStatsReadAll, PermAuditRead,
 		PermSystemSetting, PermSystemBackup,
 	},

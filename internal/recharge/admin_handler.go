@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -134,48 +133,6 @@ func (h *AdminHandler) ListOrders(c *gin.Context) {
 		return
 	}
 	resp.OK(c, gin.H{"items": rows, "total": total, "limit": limit, "offset": offset})
-}
-
-// GET /api/admin/payment/epay
-func (h *AdminHandler) GetPaymentConfig(c *gin.Context) {
-	resp.OK(c, h.svc.AdminPaymentConfig())
-}
-
-type paymentConfigReq struct {
-	GatewayURL      string `json:"gateway_url"`
-	PID             string `json:"pid"`
-	Key             string `json:"key"`
-	NotifyURL       string `json:"notify_url"`
-	ReturnURL       string `json:"return_url"`
-	SignType        string `json:"sign_type"`
-	RechargeEnabled bool   `json:"recharge_enabled"`
-}
-
-// PUT /api/admin/payment/epay
-func (h *AdminHandler) UpdatePaymentConfig(c *gin.Context) {
-	var req paymentConfigReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		resp.BadRequest(c, err.Error())
-		return
-	}
-	err := h.svc.AdminUpdatePaymentConfig(c.Request.Context(), PaymentConfigUpdate{
-		GatewayURL:      req.GatewayURL,
-		PID:             req.PID,
-		Key:             req.Key,
-		NotifyURL:       req.NotifyURL,
-		ReturnURL:       req.ReturnURL,
-		SignType:        strings.TrimSpace(req.SignType),
-		RechargeEnabled: req.RechargeEnabled,
-	})
-	if err != nil {
-		if errors.Is(err, ErrSettingsUnavailable) {
-			resp.Fail(c, resp.CodeBadRequest, "系统设置服务不可用")
-			return
-		}
-		resp.BadRequest(c, err.Error())
-		return
-	}
-	resp.OK(c, h.svc.AdminPaymentConfig())
 }
 
 // POST /api/admin/recharge/orders/:id/force-paid
