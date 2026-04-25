@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS `recharge_orders` (
     `bonus`        BIGINT          NOT NULL DEFAULT 0,
     `channel`      VARCHAR(16)     NOT NULL DEFAULT 'epay',
     `pay_method`   VARCHAR(16)     NOT NULL DEFAULT '',
-    `status`       VARCHAR(16)     NOT NULL DEFAULT 'pending',
+    `status`       VARCHAR(32)     NOT NULL DEFAULT 'pending',
     `trade_no`     VARCHAR(64)     NOT NULL DEFAULT '',
     `paid_at`      DATETIME        NULL,
     `pay_url`      VARCHAR(512)    NOT NULL DEFAULT '',

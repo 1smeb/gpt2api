@@ -29,9 +29,10 @@ ON DUPLICATE KEY UPDATE `name` = VALUES(`name`);
 -- ============================================================
 -- 充值订单
 --   流程:pending(已创建,待用户跳转支付) ->
---        paid(支付回调成功,积分已入账) /
+--        paid(支付回调成功,待履约) ->
+--        completed(积分已入账) /
 --        cancelled(用户手动取消) /
---        failed(回调校验失败等)
+--        fulfillment_failed(支付成功但履约失败,待重试/人工处理)
 --   超时逻辑:30 分钟未支付自动标记为 expired(由后台 cleanup 任务扫)。
 -- ============================================================
 CREATE TABLE IF NOT EXISTS `recharge_orders` (
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS `recharge_orders` (
     `bonus`        BIGINT          NOT NULL DEFAULT 0,
     `channel`      VARCHAR(16)     NOT NULL DEFAULT 'epay' COMMENT 'epay | manual | other',
     `pay_method`   VARCHAR(16)     NOT NULL DEFAULT '' COMMENT 'alipay | wxpay | 等,下发回调填入',
-    `status`       VARCHAR(16)     NOT NULL DEFAULT 'pending' COMMENT 'pending | paid | expired | cancelled | failed',
+    `status`       VARCHAR(32)     NOT NULL DEFAULT 'pending' COMMENT 'pending | paid | completed | expired | cancelled | fulfillment_failed',
     `trade_no`     VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '上游交易号,回调填入',
     `paid_at`      DATETIME        NULL,
     `pay_url`      VARCHAR(512)    NOT NULL DEFAULT '',

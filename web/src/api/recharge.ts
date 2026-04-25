@@ -25,7 +25,7 @@ export interface Order {
   bonus: number
   channel: string
   pay_method: string
-  status: 'pending' | 'paid' | 'expired' | 'cancelled' | 'failed'
+  status: 'pending' | 'paid' | 'completed' | 'expired' | 'cancelled' | 'fulfillment_failed' | 'failed'
   trade_no: string
   paid_at?: string | null
   pay_url?: string

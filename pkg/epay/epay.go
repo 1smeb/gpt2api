@@ -6,7 +6,7 @@
 //     sign 计算:除 sign/sign_type 外所有非空参数按 key ASCII 升序,拼成 k1=v1&k2=v2...
 //     末尾直接拼接 key(注意不再加 &),md5 后转小写。
 //  2. 异步通知:POST form(也可能是 GET,按 header Content-Type 判断),
-//     校验 sign 同上。trade_status == "TRADE_SUCCESS" 时标记订单已支付。
+//     校验 sign 同上。trade_status == "TRADE_SUCCESS" 后由业务层做金额校验、状态流转和履约。
 //  3. 返回文本 "success"(必须原样,不能带换行、HTML),否则上游会无限重试。
 //
 // 这里刻意不耦合 http handler,由调用方组装 URL / 解析参数,方便单测。
@@ -116,12 +116,12 @@ func (s *Signer) BuildPayURL(gatewayURL, outTradeNo, name string, priceCNYFen in
 
 // NotifyPayload 抽象一次回调的关键字段。
 type NotifyPayload struct {
-	OutTradeNo  string            // 商户订单号
-	TradeNo     string            // 易支付交易号
-	TradeStatus string            // "TRADE_SUCCESS" / 其它
+	OutTradeNo  string // 商户订单号
+	TradeNo     string // 易支付交易号
+	TradeStatus string // "TRADE_SUCCESS" / 其它
 	Name        string
-	Money       string // 元(字符串)
-	Type        string // alipay / wxpay / ...
+	Money       string            // 元(字符串)
+	Type        string            // alipay / wxpay / ...
 	Raw         map[string]string // 原始参数,便于落库排查
 }
 

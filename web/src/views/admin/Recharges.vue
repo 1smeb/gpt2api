@@ -68,7 +68,7 @@ const total = ref(0)
 const loadingOrd = ref(false)
 const filter = reactive({
   user_id: undefined as number | undefined,
-  status: '' as '' | 'pending' | 'paid' | 'cancelled' | 'expired' | 'failed',
+  status: '' as '' | 'pending' | 'paid' | 'completed' | 'cancelled' | 'expired' | 'fulfillment_failed' | 'failed',
   limit: 20,
   offset: 0,
 })
@@ -88,8 +88,8 @@ async function loadOrders() {
 }
 
 async function forcePaid(o: rechargeApi.Order) {
-  if (o.status !== 'pending') {
-    ElMessage.warning('只有 pending 状态可以手工入账')
+  if (!['pending', 'paid', 'fulfillment_failed'].includes(o.status)) {
+    ElMessage.warning('只有待支付/待履约/履约失败状态可以手工入账')
     return
   }
   const { value: pwd } = await ElMessageBox.prompt(
@@ -104,10 +104,10 @@ async function forcePaid(o: rechargeApi.Order) {
 }
 
 const statusColor: Record<string, 'success' | 'info' | 'warning' | 'danger'> = {
-  paid: 'success', pending: 'warning', cancelled: 'info', expired: 'info', failed: 'danger',
+  completed: 'success', paid: 'warning', pending: 'warning', cancelled: 'info', expired: 'info', fulfillment_failed: 'danger', failed: 'danger',
 }
 const statusLabel: Record<string, string> = {
-  paid: '已到账', pending: '待支付', cancelled: '已取消', expired: '已超时', failed: '失败',
+  completed: '已到账', paid: '待履约', pending: '待支付', cancelled: '已取消', expired: '已超时', fulfillment_failed: '履约失败', failed: '失败',
 }
 
 const currentPage = computed<number>({
@@ -173,9 +173,11 @@ onMounted(() => {
             <el-select v-model="filter.status" placeholder="状态" clearable style="width:130px">
               <el-option label="全部" value="" />
               <el-option label="待支付" value="pending" />
-              <el-option label="已到账" value="paid" />
+              <el-option label="待履约" value="paid" />
+              <el-option label="已到账" value="completed" />
               <el-option label="已取消" value="cancelled" />
               <el-option label="已超时" value="expired" />
+              <el-option label="履约失败" value="fulfillment_failed" />
               <el-option label="失败" value="failed" />
             </el-select>
             <el-button type="primary" @click="() => { filter.offset = 0; loadOrders() }" :loading="loadingOrd">
@@ -217,7 +219,7 @@ onMounted(() => {
             </el-table-column>
             <el-table-column label="操作" width="130" fixed="right">
               <template #default="{ row }">
-                <el-button v-if="row.status === 'pending'" size="small" link type="warning"
+                <el-button v-if="['pending', 'paid', 'fulfillment_failed'].includes(row.status)" size="small" link type="warning"
                            @click="forcePaid(row)">手工入账</el-button>
                 <span v-else style="color:var(--el-text-color-placeholder)">—</span>
               </template>

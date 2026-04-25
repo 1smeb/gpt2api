@@ -32,20 +32,20 @@ type Deps struct {
 	AuthH *auth.Handler
 	UserH *user.Handler
 
-	KeySvc     *apikey.Service
-	KeyH       *apikey.Handler
-	ProxyH     *proxy.Handler
-	AccountH   *account.Handler
-	ChannelH   *channel.Handler
+	KeySvc   *apikey.Service
+	KeyH     *apikey.Handler
+	ProxyH   *proxy.Handler
+	AccountH *account.Handler
+	ChannelH *channel.Handler
 
 	GatewayH *gateway.Handler
 	ImagesH  *gateway.ImagesHandler
 
-	BackupH      *backup.Handler
-	AuditH       *audit.Handler
-	AuditDAO     *audit.DAO
-	AdminUserH   *user.AdminHandler
-	AdminGroupH  *user.AdminGroupHandler
+	BackupH     *backup.Handler
+	AuditH      *audit.Handler
+	AuditDAO    *audit.DAO
+	AdminUserH  *user.AdminHandler
+	AdminGroupH *user.AdminGroupHandler
 
 	AdminModelH *model.AdminHandler
 	AdminKeyH   *apikey.AdminHandler
@@ -159,6 +159,8 @@ func New(d *Deps) *gin.Engine {
 		if d.RechargeH != nil {
 			pub.POST("/epay/notify", d.RechargeH.EPayNotify)
 			pub.GET("/epay/notify", d.RechargeH.EPayNotify)
+			pub.GET("/epay/return", d.RechargeH.EPayReturn)
+			pub.POST("/epay/return", d.RechargeH.EPayReturn)
 		}
 
 		// admin 全组强制 RequireAdmin;所有写操作再通过 audit.Middleware 自动落审计。

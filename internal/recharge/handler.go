@@ -2,6 +2,7 @@ package recharge
 
 import (
 	"errors"
+	"html"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -130,4 +131,62 @@ func (h *Handler) EPayNotify(c *gin.Context) {
 	form := c.Request.Form
 	text, _ := h.svc.HandleNotify(c.Request.Context(), form)
 	c.String(200, text)
+}
+
+// GET /api/public/epay/return
+// 浏览器回跳页只给用户看结果,不能触发入账。
+func (h *Handler) EPayReturn(c *gin.Context) {
+	if err := c.Request.ParseForm(); err != nil {
+		c.Data(200, "text/html; charset=utf-8", []byte(renderReturnPage(ReturnResult{
+			Message: "支付结果解析失败,请返回账单页刷新。",
+		})))
+		return
+	}
+	ret := h.svc.HandleReturn(c.Request.Context(), c.Request.Form)
+	c.Data(200, "text/html; charset=utf-8", []byte(renderReturnPage(ret)))
+}
+
+func renderReturnPage(ret ReturnResult) string {
+	trusted := "未通过签名校验"
+	if ret.Trusted {
+		trusted = "已通过签名校验"
+	}
+	outTradeNo := html.EscapeString(ret.OutTradeNo)
+	if outTradeNo == "" {
+		outTradeNo = "-"
+	}
+	tradeStatus := html.EscapeString(ret.TradeStatus)
+	if tradeStatus == "" {
+		tradeStatus = "-"
+	}
+	localStatus := html.EscapeString(ret.LocalStatus)
+	if localStatus == "" {
+		localStatus = "-"
+	}
+	return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>支付结果</title>
+  <style>
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f8fb;color:#1f2937}
+    .card{max-width:560px;margin:12vh auto;padding:32px;background:#fff;border-radius:16px;box-shadow:0 18px 50px rgba(15,23,42,.12)}
+    h1{margin:0 0 12px;font-size:24px}
+    p{line-height:1.7;color:#4b5563}
+    dl{display:grid;grid-template-columns:96px 1fr;gap:10px 14px;margin:20px 0;color:#374151}
+    dt{color:#6b7280}
+    code{font-size:12px;background:#eef2ff;padding:2px 6px;border-radius:5px;word-break:break-all}
+    .note{font-size:13px;color:#6b7280;background:#f9fafb;border-radius:10px;padding:12px;margin:18px 0}
+    a{display:inline-block;margin-top:8px;background:#2563eb;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>支付结果</h1>
+    <p>` + html.EscapeString(ret.Message) + `</p>
+    <a href="/personal/billing">返回账单页</a>
+  </main>
+</body>
+</html>`
 }
