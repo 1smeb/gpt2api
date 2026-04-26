@@ -49,13 +49,20 @@ type ChatUsage struct {
 // ChatStream 适配器返回的统一 chunk 通道。调用方需 Drain 直到通道关闭。
 type ChatStream = <-chan ChatChunk
 
-// ImageRequest 统一的图片生成请求。
+// ImageReference 是图生图 / 图片编辑的一张参考图。
+type ImageReference struct {
+	Data     []byte
+	FileName string
+}
+
+// ImageRequest 统一的图片生成请求。References 非空时表示图片编辑 / 图生图。
 type ImageRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	N      int    `json:"n,omitempty"`
-	Size   string `json:"size,omitempty"`   // 1024x1024 / 512x512 / auto
-	Format string `json:"format,omitempty"` // url / b64_json
+	Model      string           `json:"model"`
+	Prompt     string           `json:"prompt"`
+	N          int              `json:"n,omitempty"`
+	Size       string           `json:"size,omitempty"`   // 1024x1024 / 512x512 / auto
+	Format     string           `json:"format,omitempty"` // url / b64_json
+	References []ImageReference `json:"-"`
 }
 
 type ImageResult struct {

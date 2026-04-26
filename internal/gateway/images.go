@@ -20,6 +20,7 @@ import (
 	"github.com/432539/gpt2api/internal/billing"
 	"github.com/432539/gpt2api/internal/image"
 	modelpkg "github.com/432539/gpt2api/internal/model"
+	"github.com/432539/gpt2api/internal/upstream/adapter"
 	"github.com/432539/gpt2api/internal/upstream/chatgpt"
 	"github.com/432539/gpt2api/internal/usage"
 	"github.com/432539/gpt2api/pkg/logger"
@@ -184,10 +185,17 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		}
 	}
 
+	// 2.5) 解析 reference_images(图生图 / 图像编辑入口都走到这里)
+	refs, err := decodeReferenceInputs(c.Request.Context(), req.ReferenceImages)
+	if err != nil {
+		fail("invalid_request_error")
+		openAIError(c, http.StatusBadRequest, "invalid_reference_image", "参考图解析失败:"+err.Error())
+		return
+	}
+
 	// 若本地模型配置了外置渠道(OpenAI DALL·E / Gemini imagen 等),优先走渠道。
-	// 参考图场景(reference_images)仍走原 ChatGPT 账号池 Runner。
 	if h.Channels != nil {
-		if handled := h.dispatchImageToChannel(c, ak, m, &req, rec, ratio); handled {
+		if handled := h.dispatchImageToChannel(c, ak, m, &req, rec, ratio, imageRefsToAdapter(refs)); handled {
 			return
 		}
 	}
@@ -237,14 +245,6 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 			openAIError(c, http.StatusInternalServerError, "internal_error", "创建任务失败:"+err.Error())
 			return
 		}
-	}
-
-	// 4.5) 解析 reference_images(图生图 / 图像编辑入口都走到这里)
-	refs, err := decodeReferenceInputs(c.Request.Context(), req.ReferenceImages)
-	if err != nil {
-		refund("invalid_request_error")
-		openAIError(c, http.StatusBadRequest, "invalid_reference_image", "参考图解析失败:"+err.Error())
-		return
 	}
 
 	// 5) 执行(同步阻塞)
@@ -363,14 +363,14 @@ func (h *ImagesHandler) ImageTask(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"task_id":          t.TaskID,
-		"status":           t.Status,
-		"conversation_id":  t.ConversationID,
-		"created":          t.CreatedAt.Unix(),
-		"finished_at":      nullableUnix(t.FinishedAt),
-		"error":            t.Error,
-		"credit_cost":      t.CreditCost,
-		"data":             data,
+		"task_id":         t.TaskID,
+		"status":          t.Status,
+		"conversation_id": t.ConversationID,
+		"created":         t.CreatedAt.Unix(),
+		"finished_at":     nullableUnix(t.FinishedAt),
+		"error":           t.Error,
+		"credit_cost":     t.CreditCost,
+		"data":            data,
 	})
 }
 
@@ -733,6 +733,20 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 		}
 	}
 
+	if h.Channels != nil {
+		req := &ImageGenRequest{
+			Model:          model,
+			Prompt:         prompt,
+			N:              n,
+			Size:           size,
+			ResponseFormat: c.Request.FormValue("response_format"),
+			Upscale:        upscale,
+		}
+		if handled := h.dispatchImageToChannel(c, ak, m, req, rec, ratio, imageRefsToAdapter(refs)); handled {
+			return
+		}
+	}
+
 	cost := billing.ComputeImageCost(m, n, ratio)
 	if cost > 0 {
 		if err := h.Billing.PreDeduct(c.Request.Context(), ak.UserID, ak.ID, cost, refID, "image-edit prepay"); err != nil {
@@ -873,6 +887,20 @@ func readMultipart(fh *multipart.FileHeader) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(f)
+}
+
+func imageRefsToAdapter(refs []image.ReferenceImage) []adapter.ImageReference {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]adapter.ImageReference, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, adapter.ImageReference{
+			Data:     r.Data,
+			FileName: r.FileName,
+		})
+	}
+	return out
 }
 
 // decodeReferenceInputs 把 JSON 里 reference_images(url/data-url/base64 混合)下载/解码成字节。

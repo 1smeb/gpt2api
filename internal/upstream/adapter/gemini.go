@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,17 +16,17 @@ import (
 // geminiAdapter 兼容 Google Generative Language API v1beta。
 //
 // 协议差异要点:
-//   1. 鉴权用 query param ?key=xxx 或 header X-Goog-Api-Key: xxx。
-//   2. Chat 接口路径:
-//        POST /v1beta/models/{model}:generateContent        (非流式)
-//        POST /v1beta/models/{model}:streamGenerateContent  (流式)
-//      流式默认返回 JSON 数组(每个元素是一个 GenerateContentResponse),
-//      配合 ?alt=sse 才能拿到 text/event-stream。
-//   3. 消息体结构:{ contents: [{role, parts:[{text}]}] }。
-//      role 只接受 "user" / "model"(把 OpenAI assistant → model,system 拼
-//      到 systemInstruction 或第一条 user 里)。
-//   4. 图片生成走 imagen-4:generateContent 或 gemini-2.5-flash-image-preview,
-//      返回 inlineData base64。
+//  1. 鉴权用 query param ?key=xxx 或 header X-Goog-Api-Key: xxx。
+//  2. Chat 接口路径:
+//     POST /v1beta/models/{model}:generateContent        (非流式)
+//     POST /v1beta/models/{model}:streamGenerateContent  (流式)
+//     流式默认返回 JSON 数组(每个元素是一个 GenerateContentResponse),
+//     配合 ?alt=sse 才能拿到 text/event-stream。
+//  3. 消息体结构:{ contents: [{role, parts:[{text}]}] }。
+//     role 只接受 "user" / "model"(把 OpenAI assistant → model,system 拼
+//     到 systemInstruction 或第一条 user 里)。
+//  4. 图片生成走 imagen-4:generateContent 或 gemini-2.5-flash-image-preview,
+//     返回 inlineData base64。
 //
 // 本适配器把 Gemini 响应实时转换成 OpenAI 风格 ChatChunk 输出,调用方无感。
 type geminiAdapter struct {
@@ -278,6 +279,9 @@ func (a *geminiAdapter) ImageGenerate(ctx context.Context, upstreamModel string,
 
 // imagenGenerate 走 /v1beta/models/{model}:predict,专门给 imagen-* 用。
 func (a *geminiAdapter) imagenGenerate(ctx context.Context, upstreamModel string, req *ImageRequest) (*ImageResult, error) {
+	if len(req.References) > 0 {
+		return nil, errors.New("gemini imagen: reference images are not supported")
+	}
 	n := req.N
 	if n <= 0 {
 		n = 1
@@ -330,9 +334,20 @@ func (a *geminiAdapter) imagenGenerate(ctx context.Context, upstreamModel string
 // geminiImageGenerate 走 gemini-*-image 多模态模型,请求 generateContent,
 // 响应里 parts 会含 inlineData(base64)。
 func (a *geminiAdapter) geminiImageGenerate(ctx context.Context, upstreamModel string, req *ImageRequest) (*ImageResult, error) {
+	parts := []geminiPart{{Text: req.Prompt}}
+	for _, ref := range req.References {
+		if len(ref.Data) == 0 {
+			continue
+		}
+		mimeType, _ := sniffImageMime(ref.Data)
+		parts = append(parts, geminiPart{InlineData: &geminiInlineData{
+			MimeType: mimeType,
+			Data:     base64.StdEncoding.EncodeToString(ref.Data),
+		}})
+	}
 	payload := map[string]any{
 		"contents": []geminiContent{
-			{Role: "user", Parts: []geminiPart{{Text: req.Prompt}}},
+			{Role: "user", Parts: parts},
 		},
 	}
 	body, _ := json.Marshal(payload)

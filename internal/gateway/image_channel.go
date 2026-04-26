@@ -25,16 +25,12 @@ import (
 //   - handled=true:已完成响应(成功或失败),调用方直接返回;
 //   - handled=false:没有渠道映射或全部候选失败且需要回退到内置 ChatGPT 账号池。
 //
-// 仅覆盖纯 prompt 文生图场景;reference_images 分支继续走原 Runner(ChatGPT 账号池)。
+// 支持纯 prompt 文生图,也支持带 reference_images 的图生图 / 图片编辑场景。
 func (h *ImagesHandler) dispatchImageToChannel(c *gin.Context,
 	ak *apikey.APIKey, m *modelpkg.Model, req *ImageGenRequest,
-	rec *usage.Log, ratio float64,
+	rec *usage.Log, ratio float64, refs []adapter.ImageReference,
 ) bool {
 	if h.Channels == nil {
-		return false
-	}
-	// 参考图 / 图像编辑场景不走渠道(需要上游 file upload 能力,后续再接入)。
-	if len(req.ReferenceImages) > 0 {
 		return false
 	}
 	routes, err := h.Channels.Resolve(c.Request.Context(), m.Slug, channel.ModalityImage)
@@ -79,11 +75,12 @@ func (h *ImagesHandler) dispatchImageToChannel(c *gin.Context,
 	}
 
 	ir := &adapter.ImageRequest{
-		Model:  m.Slug,
-		Prompt: req.Prompt,
-		N:      req.N,
-		Size:   req.Size,
-		Format: req.ResponseFormat,
+		Model:      m.Slug,
+		Prompt:     req.Prompt,
+		N:          req.N,
+		Size:       req.Size,
+		Format:     req.ResponseFormat,
+		References: refs,
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 7*time.Minute)
