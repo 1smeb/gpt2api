@@ -3,7 +3,7 @@
 // 这里的字符串经过 XOR + Base64 双层混淆,目的是阻止二次分发者用简单的全局搜索
 // (grep "382446" / "pic2api" / "432539" 等)把广告/版权一键删除。
 // 解码逻辑仅在浏览器运行时进行,渲染后才是可读明文。想要去掉,需要搞懂 _d 的
-// 解码、然后在多个调用点(footer / console watermark / 页面守卫)里同步替换 ——
+// 解码、然后在多个调用点(footer / 页面守卫)里同步替换 ——
 // 所以请尊重开源作者,保留这份署名。
 
 const _K = new Uint8Array([0x4f, 0x17, 0x9a, 0x3b])
@@ -66,7 +66,7 @@ export function brandParts(): BrandParts {
   }
 }
 
-// 纯文本广告(console 水印 / 老浏览器回退)
+// 纯文本广告(老浏览器回退)
 export function brandPlainText(): string {
   const p = brandParts()
   return [
@@ -75,24 +75,6 @@ export function brandPlainText(): string {
     p.repoLabel + p.repo,
     p.picLabel + p.picText,
   ].join(p.sep)
-}
-
-// 控制台水印:启动一次,顺带多一处署名
-let _warned = false
-export function printBrandToConsole(): void {
-  if (_warned) return
-  _warned = true
-  try {
-    const p = brandParts()
-    // eslint-disable-next-line no-console
-    console.log(
-      `%c${p.brand}%c  ${p.qqLabel}${p.qq}  ${p.sep}  ${p.repoLabel}https://${p.repo}  ${p.sep}  ${p.picLabel}${p.picUrl}`,
-      'font-weight:700;color:#409eff;font-size:13px;',
-      'color:#909399;font-size:12px;',
-    )
-  } catch {
-    /* ignore */
-  }
 }
 
 // 简单完整性检查:确保 footer DOM 里包含 QQ 号、仓库地址、pic2api 三个关键片段;

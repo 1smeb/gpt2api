@@ -134,9 +134,6 @@ onMounted(() => {
               <el-button type="primary" :disabled="!channelEnabled" @click="buy(p, 'alipay')">
                 支付宝
               </el-button>
-              <el-button type="success" :disabled="!channelEnabled" @click="buy(p, 'wxpay')">
-                微信
-              </el-button>
             </div>
           </el-card>
         </el-col>

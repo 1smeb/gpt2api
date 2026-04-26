@@ -213,7 +213,7 @@ watch(() => store.isLoggedIn, (v) => { if (v) loadMenu() })
         </router-view>
       </el-main>
 
-      <el-footer class="footer">
+      <el-footer class="footer" style="opacity:0">
         <div class="footer-line brand-line">
           <b class="brand-name">{{ brand.brand }}</b>
           <span class="sep">{{ brand.sep }}</span>
