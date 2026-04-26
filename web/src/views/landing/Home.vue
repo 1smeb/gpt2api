@@ -70,11 +70,11 @@ const features = [
           <span v-else class="logo-mark">{{ (siteName[0] || 'G').toUpperCase() }}</span>
           <span class="logo-name">{{ siteName }}</span>
         </a>
-        <nav class="menu">
-          <a :href="repoHref" target="_blank" rel="noopener">
+        <nav class="menu" style="opacity:0">
+          <a target="_blank" rel="noopener">
             GitHub <el-icon :size="13" class="ext"><TopRight /></el-icon>
           </a>
-          <a :href="qqHref" target="_blank" rel="noopener">QQ 群 {{ brand.qq }}</a>
+          <a target="_blank" rel="noopener">QQ 群 {{ brand.qq }}</a>
         </nav>
         <div class="nav-actions">
           <el-button
@@ -121,7 +121,7 @@ const features = [
               <el-icon><Link /></el-icon> GitHub 仓库
             </el-button>
           </div>
-          <div class="hero-meta">
+          <div class="hero-meta" style="display:none">
             <a class="meta-link" :href="qqHref" target="_blank" rel="noopener">
               <el-icon><Service /></el-icon> {{ brand.qqLabel }}{{ brand.qq }}
             </a>
@@ -166,7 +166,7 @@ const features = [
     </section>
 
     <!-- ============= Footer(极简) ============= -->
-    <footer class="footer">
+    <footer class="footer" style="display:none">
       <div class="footer-inner">
         <span>© {{ new Date().getFullYear() }} {{ siteName }} · gpt-image-2 终稿直出网关</span>
         <span class="sep">·</span>
