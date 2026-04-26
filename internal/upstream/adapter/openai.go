@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -192,7 +195,11 @@ func parseOpenAINonStream(body io.ReadCloser, ch chan<- ChatChunk) {
 }
 
 // ImageGenerate 调用 /v1/images/generations(DALL·E 3 / gpt-image-1 等)。
+// 如果带 References,则改走 /v1/images/edits 的 multipart 协议。
 func (a *openaiAdapter) ImageGenerate(ctx context.Context, upstreamModel string, req *ImageRequest) (*ImageResult, error) {
+	if len(req.References) > 0 {
+		return a.imageEdit(ctx, upstreamModel, req)
+	}
 	n := req.N
 	if n <= 0 {
 		n = 1
@@ -206,6 +213,9 @@ func (a *openaiAdapter) ImageGenerate(ctx context.Context, upstreamModel string,
 		"prompt": req.Prompt,
 		"n":      n,
 		"size":   size,
+	}
+	if req.Format != "" {
+		payload["response_format"] = req.Format
 	}
 	body, _ := json.Marshal(payload)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -226,8 +236,8 @@ func (a *openaiAdapter) ImageGenerate(ctx context.Context, upstreamModel string,
 	}
 	var obj struct {
 		Data []struct {
-			URL    string `json:"url"`
-			B64    string `json:"b64_json"`
+			URL string `json:"url"`
+			B64 string `json:"b64_json"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&obj); err != nil {
@@ -246,6 +256,123 @@ func (a *openaiAdapter) ImageGenerate(ctx context.Context, upstreamModel string,
 		return nil, errors.New("openai: empty image response")
 	}
 	return r, nil
+}
+
+func (a *openaiAdapter) imageEdit(ctx context.Context, upstreamModel string, req *ImageRequest) (*ImageResult, error) {
+	n := req.N
+	if n <= 0 {
+		n = 1
+	}
+	size := req.Size
+	if size == "" {
+		size = "1024x1024"
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("model", upstreamModel)
+	_ = mw.WriteField("prompt", req.Prompt)
+	_ = mw.WriteField("n", fmt.Sprintf("%d", n))
+	_ = mw.WriteField("size", size)
+	if req.Format != "" {
+		_ = mw.WriteField("response_format", req.Format)
+	}
+	for i, ref := range req.References {
+		if err := writeMultipartImage(mw, "image", ref, i); err != nil {
+			_ = mw.Close()
+			return nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		a.endpoint("/images/edits"), &body)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
+	httpReq.Header.Set("Authorization", "Bearer "+a.apiKey)
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai: image edit request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, upstreamErr(resp)
+	}
+	var obj struct {
+		Data []struct {
+			URL string `json:"url"`
+			B64 string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&obj); err != nil {
+		return nil, fmt.Errorf("openai: image edit decode: %w", err)
+	}
+	r := &ImageResult{}
+	for _, d := range obj.Data {
+		if d.URL != "" {
+			r.URLs = append(r.URLs, d.URL)
+		}
+		if d.B64 != "" {
+			r.B64s = append(r.B64s, d.B64)
+		}
+	}
+	if len(r.URLs) == 0 && len(r.B64s) == 0 {
+		return nil, errors.New("openai: empty image edit response")
+	}
+	return r, nil
+}
+
+func writeMultipartImage(mw *multipart.Writer, field string, ref ImageReference, idx int) error {
+	if len(ref.Data) == 0 {
+		return fmt.Errorf("openai: empty reference image %d", idx+1)
+	}
+	mimeType, ext := sniffImageMime(ref.Data)
+	name := filepath.Base(strings.TrimSpace(ref.FileName))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = fmt.Sprintf("image_%d%s", idx+1, ext)
+	}
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition",
+		fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeMultipart(field), escapeMultipart(name)))
+	h.Set("Content-Type", mimeType)
+	part, err := mw.CreatePart(h)
+	if err != nil {
+		return err
+	}
+	_, err = part.Write(ref.Data)
+	return err
+}
+
+func sniffImageMime(data []byte) (string, string) {
+	n := len(data)
+	if n > 512 {
+		n = 512
+	}
+	mimeType := http.DetectContentType(data[:n])
+	if i := strings.IndexByte(mimeType, ';'); i >= 0 {
+		mimeType = strings.TrimSpace(mimeType[:i])
+	}
+	switch mimeType {
+	case "image/jpeg":
+		return mimeType, ".jpg"
+	case "image/png":
+		return mimeType, ".png"
+	case "image/webp":
+		return mimeType, ".webp"
+	case "image/gif":
+		return mimeType, ".gif"
+	default:
+		return "image/png", ".png"
+	}
+}
+
+func escapeMultipart(s string) string {
+	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"", "\r", "", "\n", "").Replace(s)
 }
 
 // Ping 发一次 /v1/models 探活。大部分兼容站都实现了这个端点。
