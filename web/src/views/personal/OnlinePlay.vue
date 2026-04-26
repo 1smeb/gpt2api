@@ -842,9 +842,9 @@ watch(activeTab, (v) => {
                     @click="openInNewWindow(img.url)"
                   />
                   <div class="img-btns">
-                    <button class="img-btn" @click="openInNewWindow(img.url)">
+                    <!-- <button class="img-btn" @click="openInNewWindow(img.url)">
                       <el-icon><ZoomIn /></el-icon> 预览
-                    </button>
+                    </button> -->
                     <button class="img-btn" @click="downloadUrl(img.url)">
                       <el-icon><Download /></el-icon> 下载
                     </button>
