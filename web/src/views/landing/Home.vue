@@ -110,7 +110,6 @@ const features = [
             一键出高清终稿
           </h1>
           <p class="hero-sub">
-            基于 chatgpt.com 逆向的 <b>gpt-image-2</b> 网关<br/>
             <b>IMG2 终稿直出</b> · 多比例 / 批量 N 张 / OpenAI SDK 零改造
           </p>
           <div class="hero-cta">
