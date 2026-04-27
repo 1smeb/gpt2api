@@ -71,6 +71,19 @@ func init() {
 // ImageProxyTTL 单条签名 URL 的默认有效期(24h,够前端离线展示一段时间)。
 const ImageProxyTTL = 24 * time.Hour
 
+// parseIntDefault 安全解析整数:空 / 解析失败时回退到 def。
+// 留作 ImageProxy 的 thumb_kb 这种"前端可不传"参数使用。
+func parseIntDefault(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 // BuildImageProxyURL 生成代理 URL。返回绝对 path(不含 host),调用方可以直接拼或交给前端同 origin 使用。
 //
 // 默认 ttl=24h。前端展示一张历史图片,最多走一次上游获取 bytes,之后浏览器缓存即可。
@@ -98,11 +111,19 @@ func verifyImgSig(taskID string, idx int, expMs int64, sig string) bool {
 }
 
 // ImageProxy 按签名代理下载上游图片。无需 API Key,只靠 URL 签名校验。
+//
+// 新增查询参数 thumb_kb(0~64):
+//   - 0:返回原图(走 upscale 逻辑)
+//   - >0:跳过 upscale,直接把上游原图压成 ≤ thumb_kb KB 的 JPEG 缩略图返回
+//     —— 用于前端列表预览,显著降低下载体积和首屏延迟。
+//
+// 命中缩略图路径时,响应头会附带 X-Thumb-KB,便于前端 / 旁路确认是否生效。
 func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 	taskID := c.Param("task_id")
 	idxStr := c.Param("idx")
 	expStr := c.Query("exp")
 	sig := c.Query("sig")
+	thumbKB := image.ClampThumbKB(parseIntDefault(c.Query("thumb_kb"), 0))
 
 	if taskID == "" || idxStr == "" || expStr == "" || sig == "" {
 		c.AbortWithStatus(http.StatusBadRequest)
@@ -178,7 +199,12 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 
 	// 按需放大:若 task 上打了 upscale 标记,先走进程内 LRU,命中则直接返回。
 	// 未命中再拉原图,放大成 PNG 后写入缓存。
+	// 缩略图请求(thumb_kb>0)显式跳过 upscale —— 否则会出现"先放大成 4K
+	// PNG,再压回 10KB JPEG"这种 CPU 浪费的奇怪链路。
 	scale := image.ValidateUpscale(t.Upscale)
+	if thumbKB > 0 {
+		scale = image.UpscaleNone
+	}
 	cacheKey := ""
 	if scale != "" {
 		cacheKey = fmt.Sprintf("%s|%d|%s", taskID, idx, scale)
@@ -199,6 +225,18 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 	}
 	if ct == "" {
 		ct = "image/png"
+	}
+
+	// 缩略图分支:直接压缩原字节,不进 upscale 缓存;失败时回落原图。
+	if thumbKB > 0 {
+		if data, ctThumb, ok := image.MakeThumbnail(body, thumbKB); ok {
+			c.Header("Cache-Control", "private, max-age=86400")
+			c.Header("X-Thumb-KB", strconv.Itoa(thumbKB))
+			c.Data(http.StatusOK, ctThumb, data)
+			return
+		}
+		// 解码 / 编码失败:回落原图,但仍带上 X-Thumb-KB 标记 + ;miss 便于排查。
+		c.Header("X-Thumb-KB", strconv.Itoa(thumbKB)+";miss")
 	}
 
 	if scale != "" {

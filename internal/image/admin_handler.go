@@ -2,6 +2,8 @@ package image
 
 import (
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -36,8 +38,14 @@ func (h *AdminHandler) List(c *gin.Context) {
 
 	f := AdminTaskFilter{
 		UserID:  userID,
-		Keyword: c.Query("keyword"),
-		Status:  c.Query("status"),
+		Keyword: strings.TrimSpace(c.Query("keyword")),
+		Status:  strings.TrimSpace(c.Query("status")),
+	}
+	if t, ok := parseFilterTime(c.Query("start_at")); ok {
+		f.Since = t
+	}
+	if t, ok := parseFilterTime(c.Query("end_at")); ok {
+		f.Until = t.Add(time.Second)
 	}
 
 	rows, total, err := h.dao.ListAdmin(c.Request.Context(), f, size, (page-1)*size)
@@ -46,16 +54,26 @@ func (h *AdminHandler) List(c *gin.Context) {
 		return
 	}
 
-	// 把 result_urls JSON bytes 解成可读字符串数组后输出
+	// 把 result_urls JSON bytes 解成可读字符串数组后输出 —— 同时改写为
+	// 自家代理 URL,前端无须再单独构造,且永远不会泄漏上游鉴权 URL。
 	type rowOut struct {
 		AdminTaskRow
 		ResultURLsParsed []string `json:"result_urls_parsed"`
 	}
 	out := make([]rowOut, 0, len(rows))
 	for _, r := range rows {
+		urls := r.DecodeResultURLs()
+		if len(urls) > 0 {
+			urls = BuildProxyURLs(r.TaskID, urls)
+		} else if fids := r.DecodeFileIDs(); len(fids) > 0 {
+			urls = make([]string, len(fids))
+			for i := range fids {
+				urls[i] = BuildProxyURL(r.TaskID, i, "")
+			}
+		}
 		out = append(out, rowOut{
 			AdminTaskRow:     r,
-			ResultURLsParsed: r.DecodeResultURLs(),
+			ResultURLsParsed: urls,
 		})
 	}
 

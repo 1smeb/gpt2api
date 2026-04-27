@@ -111,21 +111,68 @@ SELECT id, task_id, user_id, key_id, model_id, account_id, prompt, n, size, upsc
 	return &t, nil
 }
 
-// ListByUser 按用户分页。
+// ListByUser 按用户分页(无筛选,保留作为向后兼容)。
 func (d *DAO) ListByUser(ctx context.Context, userID uint64, limit, offset int) ([]Task, error) {
+	rows, _, err := d.ListByUserFiltered(ctx, userID, UserTaskFilter{}, limit, offset)
+	return rows, err
+}
+
+// UserTaskFilter 用户视角的筛选条件,所有字段都可选。
+// Keyword 模糊匹配 prompt;Since/Until 用前闭后开区间。
+type UserTaskFilter struct {
+	Status  string
+	Keyword string
+	Since   time.Time
+	Until   time.Time
+}
+
+// ListByUserFiltered 用户视角的可筛选分页查询,同时返回总数。
+func (d *DAO) ListByUserFiltered(ctx context.Context, userID uint64, f UserTaskFilter, limit, offset int) ([]Task, int64, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	var out []Task
-	err := d.db.SelectContext(ctx, &out, `
+	if offset < 0 {
+		offset = 0
+	}
+	where := "user_id = ?"
+	args := []interface{}{userID}
+	if f.Status != "" {
+		where += " AND status = ?"
+		args = append(args, f.Status)
+	}
+	if f.Keyword != "" {
+		where += " AND prompt LIKE ?"
+		args = append(args, "%"+f.Keyword+"%")
+	}
+	if !f.Since.IsZero() {
+		where += " AND created_at >= ?"
+		args = append(args, f.Since)
+	}
+	if !f.Until.IsZero() {
+		where += " AND created_at < ?"
+		args = append(args, f.Until)
+	}
+
+	var total int64
+	if err := d.db.GetContext(ctx, &total,
+		`SELECT COUNT(*) FROM image_tasks WHERE `+where, args...); err != nil {
+		return nil, 0, err
+	}
+
+	listSQL := `
 SELECT id, task_id, user_id, key_id, model_id, account_id, prompt, n, size, upscale, status,
        conversation_id, file_ids, result_urls, error, estimated_credit, credit_cost,
        created_at, started_at, finished_at
   FROM image_tasks
- WHERE user_id = ?
+ WHERE ` + where + `
  ORDER BY id DESC
- LIMIT ? OFFSET ?`, userID, limit, offset)
-	return out, err
+ LIMIT ? OFFSET ?`
+	args2 := append(args, limit, offset)
+	var out []Task
+	if err := d.db.SelectContext(ctx, &out, listSQL, args2...); err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
 }
 
 // AdminTaskRow 是管理员视角的生成记录行,JOIN 了 users 表的邮箱。
@@ -139,6 +186,8 @@ type AdminTaskFilter struct {
 	UserID  uint64
 	Keyword string // 模糊匹配 prompt / email
 	Status  string
+	Since   time.Time
+	Until   time.Time
 }
 
 // ListAdmin 全局分页(admin)。
@@ -160,6 +209,14 @@ func (d *DAO) ListAdmin(ctx context.Context, f AdminTaskFilter, limit, offset in
 		like := "%" + f.Keyword + "%"
 		where += " AND (t.prompt LIKE ? OR u.email LIKE ?)"
 		args = append(args, like, like)
+	}
+	if !f.Since.IsZero() {
+		where += " AND t.created_at >= ?"
+		args = append(args, f.Since)
+	}
+	if !f.Until.IsZero() {
+		where += " AND t.created_at < ?"
+		args = append(args, f.Until)
 	}
 
 	var total int64
@@ -227,4 +284,3 @@ func truncate(s string, max int) string {
 	return s[:max]
 }
 
-var _ = time.Now // keep import

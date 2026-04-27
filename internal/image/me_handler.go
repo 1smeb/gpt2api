@@ -48,6 +48,21 @@ func toView(t *Task) taskView {
 	for i, id := range fids {
 		fids[i] = strings.TrimPrefix(id, "sed:")
 	}
+	// 关键:对外暴露的图片 URL 一律改成本地代理地址,避免:
+	//   1) chatgpt.com estuary 防盗链 → 浏览器 403
+	//   2) 上游 15 分钟签名过期 → 历史图片 404
+	// 代理收到请求后会再走一次 ImageDownloadURL 现取签名,
+	// 所以历史任务的旧 URL 即便已失效也照样能回放。
+	if len(urls) > 0 {
+		urls = BuildProxyURLs(t.TaskID, urls)
+	} else if len(fids) > 0 {
+		// 极少数老数据 result_urls 为空但 file_ids 完整:
+		// 同样按 idx 走代理,代理端能根据 file_ids 现取签名 URL。
+		urls = make([]string, len(fids))
+		for i := range fids {
+			urls[i] = BuildProxyURL(t.TaskID, i, "")
+		}
+	}
 	return taskView{
 		ID: t.ID, TaskID: t.TaskID, UserID: t.UserID, ModelID: t.ModelID,
 		AccountID: t.AccountID, Prompt: t.Prompt, N: t.N, Size: t.Size,
@@ -59,7 +74,11 @@ func toView(t *Task) taskView {
 }
 
 // GET /api/me/images/tasks
-// 查询参数:limit(默认 20,上限 100), offset
+// 查询参数:
+//   limit(默认 20,上限 100), offset
+//   status            = queued | dispatched | running | success | failed
+//   keyword           = prompt 模糊匹配
+//   start_at, end_at  = 时间区间;支持 RFC3339、"2006-01-02 15:04:05"、"2006-01-02"
 func (h *MeHandler) List(c *gin.Context) {
 	uid := middleware.UserID(c)
 	if uid == 0 {
@@ -77,7 +96,20 @@ func (h *MeHandler) List(c *gin.Context) {
 	if offset < 0 {
 		offset = 0
 	}
-	tasks, err := h.dao.ListByUser(c.Request.Context(), uid, limit, offset)
+
+	f := UserTaskFilter{
+		Status:  strings.TrimSpace(c.Query("status")),
+		Keyword: strings.TrimSpace(c.Query("keyword")),
+	}
+	if t, ok := parseFilterTime(c.Query("start_at")); ok {
+		f.Since = t
+	}
+	if t, ok := parseFilterTime(c.Query("end_at")); ok {
+		// end_at 设计为闭区间("到这一天"),DAO 用前闭后开,所以这里 +1 秒兜底。
+		f.Until = t.Add(time.Second)
+	}
+
+	tasks, total, err := h.dao.ListByUserFiltered(c.Request.Context(), uid, f, limit, offset)
 	if err != nil {
 		resp.Internal(c, err.Error())
 		return
@@ -86,7 +118,33 @@ func (h *MeHandler) List(c *gin.Context) {
 	for i := range tasks {
 		items = append(items, toView(&tasks[i]))
 	}
-	resp.OK(c, gin.H{"items": items, "limit": limit, "offset": offset})
+	resp.OK(c, gin.H{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+// parseFilterTime 兼容前端常见的几种时间字面量写法,所有字符串都按
+// 服务器本地时区解析,匹配 image_tasks.created_at 的 DATETIME 语义。
+func parseFilterTime(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // GET /api/me/images/tasks/:id

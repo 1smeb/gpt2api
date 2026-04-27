@@ -211,9 +211,16 @@ type probeOutcome struct {
 // 适合用于后台定时探测。
 //
 // 请求 body 参照抓包样例;响应关心的字段是:
-//   - limits_progress[].feature_name == "image_gen" → remaining / reset_after
+//   - limits_progress[].feature_name == "image_gen" → remaining / max_value / reset_after
 //   - default_model_slug  → 账号默认模型
 //   - blocked_features    → 被风控限制的功能;非空需要关注
+//
+// 关于 total(账号"真实日额度"):
+//   - 优先取响应里 image_gen 条目的 max_value / cap / total(不同时期字段名不同),
+//     以兼容 ChatGPT 后端版本变化。
+//   - 拿不到时退化为 today_used_count(若 today_used_date == 当天)+ remaining 估算,
+//     这个值 = 我们已经派发出去的 + 上游说还剩的,等于"今日上限"的下界,基本对得上。
+//   - 这两个都拿不到才回退 -1,保留原 total(由 SQL 的 CASE WHEN 兜底)。
 //
 // 指纹注意事项(曾在这里踩过 403):
 //   - TLS ClientHello 必须是 Chrome parrot(uTLS),由 q.clientFor 返回的 transport 提供;
@@ -303,6 +310,12 @@ func (q *QuotaProber) doProbe(ctx context.Context, a *Account, accessToken strin
 			FeatureName string `json:"feature_name"`
 			Remaining   *int   `json:"remaining"`
 			ResetAfter  string `json:"reset_after"`
+			// total 在 chatgpt 后端不同版本里字段名不一致,全部尝试解析;
+			// 哪个非 nil 就用哪个(优先级 max_value > cap > total > limit)。
+			MaxValue *int `json:"max_value"`
+			Cap      *int `json:"cap"`
+			Total    *int `json:"total"`
+			Limit    *int `json:"limit"`
 		} `json:"limits_progress"`
 	}
 	if err = json.Unmarshal(data, &payload); err != nil {
@@ -320,6 +333,13 @@ func (q *QuotaProber) doProbe(ctx context.Context, a *Account, accessToken strin
 				out.remaining = *item.Remaining
 			}
 		}
+		// total 取观察到的最大上限(同账号多个 image_* 条目时,以最严的那条为准没意义,
+		// 这里用最大值反映"账号容量")。
+		if maxV := pickInt(item.MaxValue, item.Cap, item.Total, item.Limit); maxV != nil {
+			if *maxV > out.total {
+				out.total = *maxV
+			}
+		}
 		if item.ResetAfter != "" {
 			if t, e := time.Parse(time.RFC3339, item.ResetAfter); e == nil {
 				if out.resetAt.IsZero() || t.Before(out.resetAt) {
@@ -328,7 +348,34 @@ func (q *QuotaProber) doProbe(ctx context.Context, a *Account, accessToken strin
 			}
 		}
 	}
+
+	// 兜底:上游没返回 max_value 等字段时,用本地计数估算 total。
+	// 仅当 today_used_date 是当天才能这样估,否则上次使用日的累计会污染数据。
+	if out.total <= 0 && out.remaining >= 0 {
+		used := 0
+		if a != nil && a.TodayUsedDate.Valid {
+			today := time.Now()
+			if a.TodayUsedDate.Time.Year() == today.Year() &&
+				a.TodayUsedDate.Time.Month() == today.Month() &&
+				a.TodayUsedDate.Time.Day() == today.Day() {
+				used = a.TodayUsedCount
+			}
+		}
+		if used+out.remaining > 0 {
+			out.total = used + out.remaining
+		}
+	}
 	return
+}
+
+// pickInt 返回第一个非 nil 的指针指向的值。
+func pickInt(ps ...*int) *int {
+	for _, p := range ps {
+		if p != nil {
+			return p
+		}
+	}
+	return nil
 }
 
 // fallbackDeviceID 兜底 Oai-Device-Id:用账号 ID 拼一个固定的 uuid-like 字符串,

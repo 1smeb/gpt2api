@@ -865,6 +865,9 @@ onMounted(() => {
                       <template v-if="row.image_quota_total > 0">
                         {{ row.image_quota_total }}
                       </template>
+                      <template v-else-if="row.image_quota_remaining >= 0">
+                        ≈ {{ row.today_used_count + row.image_quota_remaining }}(估算)
+                      </template>
                       <template v-else>待探测</template>
                     </b>
                     <span v-if="row.image_quota_remaining >= 0" style="color:#a1a5ad">
@@ -872,8 +875,11 @@ onMounted(() => {
                     </span>
                   </div>
                   <div style="color:#a1a5ad">熔断阈值(仅用于停止派发):{{ row.daily_image_quota }} / 日</div>
-                  <div v-if="row.image_quota_total <= 0" style="color:#f5a623">
+                  <div v-if="row.image_quota_total <= 0 && row.image_quota_remaining < 0" style="color:#f5a623">
                     首次探测约 5 小时内完成;额度=0 时会忽略间隔立即补测。
+                  </div>
+                  <div v-else-if="row.image_quota_total <= 0" style="color:#f5a623">
+                    上游未返回 max_value,已用「今日已用 + 剩余」做估算;后续探测会回填精确值。
                   </div>
                 </div>
               </template>
@@ -882,6 +888,10 @@ onMounted(() => {
                 <span class="muted"> / </span>
                 <template v-if="row.image_quota_total > 0">
                   <b>{{ row.image_quota_total }}</b>
+                </template>
+                <template v-else-if="row.image_quota_remaining >= 0">
+                  <b>{{ row.today_used_count + row.image_quota_remaining }}</b>
+                  <span class="muted" style="font-size:11px"> ≈</span>
                 </template>
                 <template v-else>
                   <span class="muted" style="font-style:italic">待探测</span>

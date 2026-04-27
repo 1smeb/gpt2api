@@ -158,6 +158,13 @@ func main() {
 	}
 	gwH.Images = imagesH // chat/completions 识别到图像模型时转派
 
+	// 把"上游签名 URL"翻译成"自家代理 URL":历史任务列表 / 详情接口
+	// 在序列化时调用,前端拿到的全是 /p/img/<task>/<idx>?... 的本地链接,
+	// 既不会泄漏上游鉴权 URL,也不会因为签名过期而 404。
+	image.SetProxyURLBuilder(func(taskID string, idx int) string {
+		return gateway.BuildImageProxyURL(taskID, idx, gateway.ImageProxyTTL)
+	})
+
 	auditDAO := audit.NewDAO(sqldb)
 	auditH := audit.NewHandler(auditDAO)
 

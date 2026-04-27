@@ -19,12 +19,33 @@ func NewDAO(db *sqlx.DB) *DAO { return &DAO{db: db} }
 func (d *DAO) DB() *sqlx.DB { return d.db }
 
 // fill 填充非 db 列的辅助字段。
+//
+// 这里把 today_used_count "归零"的逻辑也放进来:数据库里这个计数是按
+// today_used_date 增长的累计值,如果 today_used_date 不是今天(例如昨天用过 7 张,
+// 今天还没派发),那它就不再是"今日已用",前端却没法判断。统一在 DTO 出口
+// 这一层把不是今天的计数清零,避免前端/调度器各自再处理一遍。
 func fill(a *Account) {
 	if a == nil {
 		return
 	}
 	a.HasRT = a.RefreshTokenEnc.Valid && a.RefreshTokenEnc.String != ""
 	a.HasST = a.SessionTokenEnc.Valid && a.SessionTokenEnc.String != ""
+
+	if a.TodayUsedCount > 0 {
+		if !a.TodayUsedDate.Valid || !isSameLocalDay(a.TodayUsedDate.Time, time.Now()) {
+			a.TodayUsedCount = 0
+		}
+	}
+}
+
+// isSameLocalDay 用进程当前时区比较两个时间是不是同一天。
+// 不直接用 t.Date() 的原因:driver 把 DATE 还原成 time.Time 时 location 可能是 UTC,
+// 必须先 In(Local) 再比较年月日。
+func isSameLocalDay(a, b time.Time) bool {
+	loc := time.Local
+	a = a.In(loc)
+	b = b.In(loc)
+	return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
 }
 
 func fillAll(rows []*Account) {
@@ -374,10 +395,24 @@ func (d *DAO) RecordRefreshError(ctx context.Context, id uint64, source string, 
 }
 
 // ApplyQuotaResult 更新图片额度探测结果;remaining/total = -1 表示保持原值。
+//
+// 关于 total 的写入策略:用 GREATEST 兜底而非直接覆盖。原因:
+//  1. 不同时期 ChatGPT 可能漏返 max_value,直接覆盖 0 会让 UI 退回"待探测";
+//  2. total 至少应该 ≥ 当前剩余(remaining),否则数据自相矛盾(剩 5 / 总 0)。
+//     用 GREATEST(image_quota_total, total_param, remaining_param) 一并保证。
+//
+// 这样:
+//   - 探测结果带回 total → 取传入值;
+//   - 没带回但带回了 remaining > 旧 total → 自动把 total 顶到 remaining;
+//   - 都没带回 → 保留旧 total,不会被无意清零。
 func (d *DAO) ApplyQuotaResult(ctx context.Context, id uint64, remaining, total int, resetAt *time.Time) error {
 	q := `UPDATE oai_accounts
           SET image_quota_remaining = CASE WHEN ? < 0 THEN image_quota_remaining ELSE ? END,
-              image_quota_total     = CASE WHEN ? < 0 THEN image_quota_total     ELSE ? END,
+              image_quota_total     = GREATEST(
+                  image_quota_total,
+                  CASE WHEN ? < 0 THEN 0 ELSE ? END,
+                  CASE WHEN ? < 0 THEN 0 ELSE ? END
+              ),
               image_quota_reset_at  = ?,
               image_quota_updated_at = ?
           WHERE id = ? AND deleted_at IS NULL`
@@ -387,7 +422,11 @@ func (d *DAO) ApplyQuotaResult(ctx context.Context, id uint64, remaining, total 
 	} else {
 		reset = nil
 	}
-	_, err := d.db.ExecContext(ctx, q, remaining, remaining, total, total, reset, time.Now(), id)
+	_, err := d.db.ExecContext(ctx, q,
+		remaining, remaining,
+		total, total,
+		remaining, remaining,
+		reset, time.Now(), id)
 	return err
 }
 

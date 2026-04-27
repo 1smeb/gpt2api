@@ -340,10 +340,14 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	// 会通过 f/conversation 的 payload 字段传达。
 
 	// 4.5) 图生图:上传参考图。任何一张失败都直接整体 fail(上游后续会对不上 attachment)。
+	//
+	// 超时预算:UploadFile 内部对网络层瞬时错误重试 4 次(0+0.5+1.5+3=5s 退避总和),
+	// 三步串行各自最多耗时 30s 上下,叠加重试时单张图最坏 ≈ 3*(30s+5s) = 105s。
+	// 给 180s 留一点余量;如果还是超时,说明根本不是瞬时问题,fail-fast 也合理。
 	var refs []*chatgpt.UploadedFile
 	if len(opt.References) > 0 {
 		for idx, r0 := range opt.References {
-			upCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			upCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 			up, err := cli.UploadFile(upCtx, r0.Data, r0.FileName)
 			cancel()
 			if err != nil {
@@ -494,6 +498,24 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		}
 	}
 
+	// 图生图:ParseImageSSE 用正则扫整段 SSE,会把 user 消息里「参考图」的
+	// file-service:// 指纹和 assistant 的出图一起扫进 FileIDs,且参考图往往先出现,
+	// 导致返回的 /p/img/.../0 实际下载的是上传图而非结果图。
+	// 轮询路径 ExtractImageToolMsgs 只收 async_task_type=image_gen 的 tool,不含参考图;
+	// 这里对合并后的 fileRefs 做一层差集即可。
+	if len(refs) > 0 {
+		refSet := referenceUploadFileIDSet(refs)
+		if len(refSet) > 0 {
+			n0 := len(fileRefs)
+			fileRefs = filterOutReferenceFileIDs(fileRefs, refSet)
+			if n0 != len(fileRefs) {
+				logger.L().Info("image runner stripped reference file_ids from SSE-captured refs",
+					zap.String("task_id", opt.TaskID),
+					zap.Int("before", n0), zap.Int("after", len(fileRefs)))
+			}
+		}
+	}
+
 	if len(fileRefs) == 0 {
 		return false, ErrUpstream, errors.New("no image ref produced")
 	}
@@ -528,6 +550,42 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	result.SignedURLs = signedURLs
 	result.ContentTypes = contentTypes
 	return true, "", nil
+}
+
+// referenceUploadFileIDSet 收集图生图时 UploadFile 返回的 file_id(纯 file-service id,无 sed: 前缀)。
+func referenceUploadFileIDSet(refs []*chatgpt.UploadedFile) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, u := range refs {
+		if u == nil {
+			continue
+		}
+		id := strings.TrimSpace(u.FileID)
+		if id == "" {
+			continue
+		}
+		out[strings.TrimPrefix(id, "sed:")] = struct{}{}
+	}
+	return out
+}
+
+// filterOutReferenceFileIDs 从合并后的 fileRefs 中移除与「用户参考上传」同 id 的 file-service 条目,
+// 保留 sediment(sed:...) —— 参考图只走 file-service,不会以 sed: 形式出现在同一列表里和生成图冲突。
+func filterOutReferenceFileIDs(fileRefs []string, refSet map[string]struct{}) []string {
+	if len(refSet) == 0 {
+		return fileRefs
+	}
+	out := make([]string, 0, len(fileRefs))
+	for _, ref := range fileRefs {
+		if strings.HasPrefix(ref, "sed:") {
+			out = append(out, ref)
+			continue
+		}
+		if _, skip := refSet[ref]; skip {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
 }
 
 // classifyUpstream 把上游错误转成内部 error code。
